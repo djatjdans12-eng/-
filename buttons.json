@@ -356,6 +356,10 @@
         },
         {
           "type": "key",
+          "key": "tab"
+        },
+        {
+          "type": "key",
           "key": "enter"
         },
         {

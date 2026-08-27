@@ -4,7 +4,7 @@ plate_ocr.py  —  화면 드래그 → 차량번호 OCR → 클립보드 (Windo
 
 parking_macro.py 에서 import 해서 사용한다.
 
-흐름 (수동 — 매번 드래그)
+흐름
   ` (백틱) 누름
     → 현재 활성 창 기억
     → 화면 전체에 반투명 오버레이 → 마우스로 번호판 영역 드래그
@@ -14,19 +14,18 @@ parking_macro.py 에서 import 해서 사용한다.
     → 클립보드에 복사 + 확인 팝업(원본 이미지 + 결과, 수정 가능)
     → 아까 기억해 둔 창으로 포커스 복귀
 
-원칙 (수동 모드)
+원칙
   결과를 필드에 자동 입력하지 않는다. 사람이 눈으로 보고 Ctrl+V 한다.
   (3/8, 0/O, 가/거 오인식 → 엉뚱한 차주에게 과태료 → 이의신청)
 
-흐름 (자동 — 사진 위치 고정, 위반자료 상세관리 창 전용)
-  사전 준비 : "사진영역 설정" 버튼으로 사진이 항상 뜨는 자리를 한 번만 드래그해 저장
-  이후    : 차량번호 입력칸에 커서를 두고 자동인식 단축키(기본 F9)를 누르면
-    → 저장해 둔 고정 영역만 캡처해서 OCR (드래그 없음, 팝업도 없음)
-    → 확신 있게 읽혔으면 그 번호를 곧바로 붙여넣는다
-    → 확신이 없으면(글자가 작거나 한글이 깨짐) 대신 '?' 를 붙여넣는다
-      → 화면에 '?' 가 보이면 사람이 사진을 보고 직접 고쳐 입력해야 한다는 뜻
-  ※ 사람 확인 없이 바로 입력되므로, '마지막캡처.png' 에 매번 캡처본을 남겨
-    나중에 오인식이 의심되면 대조할 수 있게 한다.
+※ 한때 "사진 영역을 고정해 두고 단축키 한 번으로 자동 입력" 기능을 붙였다가
+  걷어냈다. 원인은 코드가 아니라 도구가 용도에 안 맞아서다 —
+  여기 쓰는 윈도우 내장 OCR 은 '문서' OCR 이라, 야외에서 찍힌 차 사진 속
+  번호판을 찾아 읽는 일(ANPR)은 애초에 다른 분야다. 실제로 로그를 보면
+  번호판 대신 배경 간판이나 사진 위 '촬영일시' 자막을 읽어 왔고,
+  번호판만 딱 잘라 넣은 경우조차 화면 표시 해상도에서는 읽지 못했다.
+  배율을 더 키워도 없는 정보가 생기지는 않는다. 다시 시도하려면
+  전용 ANPR 엔진/API 가 필요하다.
 """
 
 import ctypes
@@ -770,33 +769,21 @@ class PlateOCR:
     """
     parking_macro.py 에 붙이는 OCR 기능.
 
-        ocr = PlateOCR(root, CONFIG, log=log, status=set_status,
-                       paste_callback=paste_text, save_config=save_config_value)
-        keyboard.add_hotkey("`", ocr.trigger, suppress=True)       # 수동 (드래그 + 확인 팝업)
-        keyboard.add_hotkey("f9", ocr.trigger_auto, suppress=True)  # 자동 (고정 영역, 팝업 없음)
-
-    ocr.calibrate_region() 을 한 번 실행해 사진이 뜨는 고정 위치를 드래그로
-    지정해 두면, 이후 trigger_auto() 는 그 위치만 캡처해서 곧바로 입력한다.
+        ocr = PlateOCR(root, CONFIG, log=log, status=set_status)
+        keyboard.add_hotkey("`", ocr.trigger, suppress=True)
     """
 
-    def __init__(self, root, config, log=print, status=None,
-                 paste_callback=None, save_config=None):
+    def __init__(self, root, config, log=print, status=None):
         self.root = root
         self.cfg = config or {}
         self.log = log
         self.status = status or (lambda m: None)
-        # 자동 모드에서 실제로 붙여넣기를 실행할 함수. parking_macro.paste_text
-        # 를 넘겨받아 재사용한다 (수정키 대기·클립보드 원복까지 이미 검증된 코드).
-        self.paste_callback = paste_callback
-        # 자동인식 사진 영역(ocr_auto_region) 을 buttons.json 에 영구 저장하는 함수.
-        self.save_config = save_config
         self.busy = False
         self.prev_hwnd = None
         self.overlay = None
         self.popup = None
         self._img_ref = None
         self.backend = None
-        self._pending_mode = None   # "manual" | "auto" | "calibrate"
         self.tmpdir = tempfile.mkdtemp(prefix="plate_ocr_")
         self.base_dir = os.path.dirname(os.path.abspath(sys.argv[0])) or os.getcwd()
 
@@ -814,7 +801,7 @@ class PlateOCR:
         """시작할 때 백그라운드로 엔진을 미리 올려 첫 인식 지연을 없앤다."""
         threading.Thread(target=self._ensure_backend, daemon=True).start()
 
-    # ── 단축키 진입점 (keyboard 스레드에서 호출됨) : 수동 드래그 ──
+    # ── 단축키 진입점 (keyboard 스레드에서 호출됨) ──
     def trigger(self):
         # 이전 실행이 중간에 끊겨 busy 가 True 로 굳으면 영영 안 열린다.
         # 오버레이도 팝업도 없는데 busy 면 비정상이므로 풀어 준다.
@@ -824,50 +811,11 @@ class PlateOCR:
         if self.busy:
             return
         self.busy = True
-        self._pending_mode = "manual"
         self.prev_hwnd = user32.GetForegroundWindow()
         self.log(f"[OCR] trigger (busy={self.busy})")
         self.root.after(0, self._show_overlay)
 
-    # ── 사진 영역 한 번 지정 (자동인식용 고정 좌표 저장) ──
-    def calibrate_region(self):
-        if self.busy and self.overlay is None and self.popup is None:
-            self.busy = False
-        if self.busy:
-            return
-        self.busy = True
-        self._pending_mode = "calibrate"
-        self.prev_hwnd = user32.GetForegroundWindow()
-        self.log("[OCR] 사진영역 설정 모드")
-        self.root.after(0, self._show_overlay)
-
-    # ── 자동인식 단축키 진입점 : 드래그 없이 저장된 고정 영역만 캡처 ──
-    def trigger_auto(self):
-        if self.busy and self.overlay is None and self.popup is None:
-            self.busy = False
-        if self.busy:
-            return
-        region = self.cfg.get("ocr_auto_region")
-        if not region:
-            self.log("[OCR-자동] 사진영역이 아직 지정되지 않았습니다")
-            self.status("먼저 '사진영역 설정'으로 사진 위치를 지정하세요")
-            return
-        self.busy = True
-        self._pending_mode = "auto"
-        self.prev_hwnd = user32.GetForegroundWindow()
-        x, y, w, h = region["x"], region["y"], region["w"], region["h"]
-        # 자동 모드는 '사진 전체' 처럼 큰 영역을 고정 캡처하므로, 수동 모드의
-        # (목표높이 ÷ 드래그높이) 축소 계산을 쓰면 안 된다 — 그 계산은
-        # 사람이 번호판만 딱 드래그했을 때 기준이라, 사진 전체 높이로 나누면
-        # 배율이 1 미만이 되어 이미 작은 번호판을 오히려 더 축소시켜 버린다.
-        # 대신 사진 전체를 고정 배율로 확대해서 번호판 부분을 키운다.
-        scales = self.cfg.get("ocr_auto_scales", [3.0, 4.5, 2.0])
-        pad = self.cfg.get("ocr_auto_pad", 30)
-        self.log(f"[OCR-자동] trigger {region} · 배율 {scales}")
-        self.root.after(0, lambda: self._capture_and_read(
-            x, y, w, h, scales=scales, pad=pad, try_rotation=False))
-
-    # ── 1단계 : 드래그 오버레이 (수동 인식 / 사진영역 설정 공용) ──
+    # ── 1단계 : 드래그 오버레이 ──
     def _show_overlay(self):
         if self.overlay is not None:
             return
@@ -884,11 +832,8 @@ class PlateOCR:
 
         cv = tk.Canvas(ov, bg="black", highlightthickness=0)
         cv.pack(fill="both", expand=True)
-        if self._pending_mode == "calibrate":
-            guide = "사진이 항상 뜨는 영역 전체를 드래그하세요   (Esc = 취소)"
-        else:
-            guide = "번호판 영역을 드래그하세요   (Esc = 취소)"
-        cv.create_text(vw // 2, 40, fill="white", font=("맑은 고딕", 14), text=guide)
+        cv.create_text(vw // 2, 40, fill="white", font=("맑은 고딕", 14),
+                       text="번호판 영역을 드래그하세요   (Esc = 취소)")
 
         state = {"x": 0, "y": 0, "rect": None}
 
@@ -916,11 +861,6 @@ class PlateOCR:
                 self._restore_focus()
                 return
 
-            if self._pending_mode == "calibrate":
-                self._pending_mode = None
-                self._save_calibration(x, y, w, h)
-                return
-
             # 오버레이 창이 화면에서 실제로 지워질 때까지 기다린다.
             # 너무 빨리 찍으면 어두운 오버레이가 그대로 캡처된다.
             try:
@@ -941,7 +881,6 @@ class PlateOCR:
 
         def cancel(_=None):
             close()
-            self._pending_mode = None
             self.busy = False
             self._restore_focus()
 
@@ -953,31 +892,22 @@ class PlateOCR:
         ov.focus_force()
 
     # ── 2단계 : 캡처 + 인식 (배율/전처리를 바꿔가며 시도) ──
-    def _capture_and_read(self, x, y, w, h, scales=None, pad=None, try_rotation=True):
-        """
-        scales 를 직접 넘기면(자동 모드) 아래의 '목표 높이 ÷ 드래그 높이' 계산을
-        건너뛴다. 이 계산은 "번호판만 딱 드래그했다" 는 전제라서, 사진 전체처럼
-        큰 영역을 그대로 넣으면 오히려 확대가 아니라 축소가 되어 이미 작은
-        번호판이 더 작아져 버린다 (자동 모드가 인식을 못하던 원인).
-        """
+    def _capture_and_read(self, x, y, w, h):
         t0 = time.time()
 
-        if scales is None:
-            # OCR 엔진은 글자가 무조건 클수록 좋지 않다. 잘 맞는 구간이 있다.
-            # 드래그한 높이를 기준으로 목표 높이 몇 개를 잡아 배율을 만든다.
-            targets = self.cfg.get("ocr_target_heights", [64, 100, 150, 40])
-            scales = []
-            for th in targets:
-                sc = round(max(0.5, min(8.0, float(th) / max(1, h))), 2)
-                if sc not in scales:
-                    scales.append(sc)
-            self.log(f"[OCR] 영역 {w}x{h} → 배율 {scales}")
-        else:
-            self.log(f"[OCR] 영역 {w}x{h} → 고정 배율 {scales}")
+        # OCR 엔진은 글자가 무조건 클수록 좋지 않다. 잘 맞는 구간이 있다.
+        # 드래그한 높이를 기준으로 목표 높이 몇 개를 잡아 배율을 만든다.
+        targets = self.cfg.get("ocr_target_heights", [64, 100, 150, 40])
+        scales = []
+        for th in targets:
+            sc = round(max(0.5, min(8.0, float(th) / max(1, h))), 2)
+            if sc not in scales:
+                scales.append(sc)
+        self.log(f"[OCR] 영역 {w}x{h} → 배율 {scales}")
 
         # 미리보기용 캡처 (가장 첫 배율)
         try:
-            sw0, sh0, bgra0 = grab_region(x, y, w, h, scales[0], pad=pad)
+            sw0, sh0, bgra0 = grab_region(x, y, w, h, scales[0])
         except Exception as e:
             self.log(f"[OCR] 캡처 실패: {e}")
             self.status(f"캡처 실패: {e}")
@@ -1025,7 +955,7 @@ class PlateOCR:
                     if i == 0:
                         sw, sh, data = sw0, sh0, bgra0
                     else:
-                        sw, sh, data = grab_region(x, y, w, h, sc, pad=pad)
+                        sw, sh, data = grab_region(x, y, w, h, sc)
 
                     if attempt(f"x{sc} 원본", sw, sh, data):
                         break
@@ -1037,8 +967,7 @@ class PlateOCR:
                         break
                 # 배율·전처리로 안 되면 기울기를 의심한다.
                 # 비스듬히 찍힌 번호판은 몇 도만 돌려도 결과가 달라진다.
-                # (자동 모드=사진 전체 캡처에서는 사진 자체를 돌리는 게 무의미하므로 건너뜀)
-                if try_rotation and not best[2]:
+                if not best[2]:
                     angles = self.cfg.get("ocr_angles", [-7, 7, -14, 14])
                     sc = scales[0]
                     for ang in angles:
@@ -1062,28 +991,8 @@ class PlateOCR:
         threading.Thread(target=work, daemon=True).start()
         self.status("인식 중…")
 
-    # ── 사진영역 설정 저장 ──
-    def _save_calibration(self, x, y, w, h):
-        region = {"x": x, "y": y, "w": w, "h": h}
-        if self.save_config:
-            try:
-                self.save_config("ocr_auto_region", region)
-            except Exception as e:
-                self.log(f"[OCR] 사진영역 저장 실패: {e}")
-        else:
-            self.cfg["ocr_auto_region"] = region
-        self.log(f"[OCR] 사진영역 저장됨: {region}")
-        self.status("사진 영역 저장 완료 — 이제 자동인식 단축키를 쓸 수 있습니다")
-        self.busy = False
-        self._restore_focus()
-
-    # ── 3단계 : 결과 처리 (수동=확인 팝업 / 자동=곧바로 입력) ──
+    # ── 3단계 : 결과 팝업 (자동 입력 안 함) ──
     def _show_result(self, plate, raw, png_path, ms, confident=False):
-        if self._pending_mode == "auto":
-            self._pending_mode = None
-            self._finish_auto(plate, raw, confident, ms)
-            return
-
         value = plate or ""
         if value and "?" not in value and pyperclip:
             try:
@@ -1215,37 +1124,6 @@ class PlateOCR:
             pw.after(int(sec * 1000), close)
 
         self.status(f"OCR {ms}ms · {value or '인식 실패'}")
-
-    # ── 자동 모드 마무리 : 팝업 없이 곧바로 입력 ──
-    def _finish_auto(self, plate, raw, confident, ms):
-        # 확신 있게 읽혔고 한글 자리가 '?' 로 남지 않았을 때만 실제 번호를 쓴다.
-        # 그 외(확신 없음 / 한글 깨짐 / 아예 못 읽음)에는 '?' 를 넣어
-        # 사람이 사진을 보고 고쳐야 한다는 신호로 삼는다.
-        ok = bool(confident) and bool(plate) and "?" not in plate
-        value = plate if ok else "?"
-
-        self.log(f"[OCR-자동] {ms}ms · 결과='{plate}' · 확신={confident} · "
-                 f"입력값='{value}' · 원문='{raw}'")
-
-        try:
-            if self.paste_callback:
-                self.paste_callback(value)
-            elif pyperclip:
-                pyperclip.copy(value)
-        except Exception as e:
-            self.log(f"[OCR-자동] 입력 실패: {e}")
-            self.status(f"자동인식 입력 실패: {e}")
-            self.busy = False
-            self._restore_focus()
-            return
-
-        if ok:
-            self.status(f"자동입력: {value}")
-        else:
-            self.status(f"자동인식 불확실 → '?' 입력 (사진 확인 필요) · 원문='{raw[:30]}'")
-
-        self.busy = False
-        self._restore_focus()
 
     def _restore_focus(self):
         """캡처 전에 쓰던 창으로 포커스를 돌려준다 → 바로 Ctrl+V 가능."""

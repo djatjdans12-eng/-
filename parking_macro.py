@@ -29,15 +29,11 @@
   - buttons.json 의 "pre_enter_labels" 에 적힌 버튼은 시작하자마자 Enter 를
     한 번 눌러 안내창(예: "중복건입니다")을 닫고 나서 본 동작을 시작함
     (이미 만들어 둔 buttons.json 에도 실행 시 자동으로 적용됨)
-  - 차량번호 자동인식 (위반자료 상세관리 창 전용)
-      1) "사진영역 설정" 버튼을 한 번 눌러 사진이 항상 뜨는 위치를 드래그로 지정
-      2) 차량번호 입력칸에 커서를 두고 자동인식 단축키(기본 F9) 또는
-         "차량번호 자동인식" 버튼을 누르면, 드래그 없이 그 자리를 바로 캡처해서
-         읽은 번호를 곧바로 붙여넣는다 (확인 팝업 없음)
-      3) 작게 나오거나 한글이 깨져 확신이 없으면 번호 대신 '?' 를 붙여넣는다
-         → 입력칸에 '?' 가 보이면 사진을 보고 사람이 직접 고쳐야 한다는 뜻
-      ※ 사람 확인 없이 바로 입력되므로 매번 '마지막캡처.png' 에 캡처본을 남긴다.
-        오인식이 의심되면 이 파일과 실제 입력값을 대조해서 확인할 것.
+  - 차량번호는 ` (백틱) 를 눌러 번호판 영역을 드래그하면 OCR 로 읽어 클립보드에
+    복사해 준다. 결과는 확인 팝업에서 사람이 눈으로 보고 Ctrl+V 로 넣는다.
+    (사진 위치를 고정해 두고 단축키 한 번에 자동 입력하는 기능도 만들어 봤으나,
+     윈도우 내장 OCR 은 문서용이라 야외 차 사진 속 번호판을 읽지 못해 걷어냈다.
+     자세한 사정은 plate_ocr.py 맨 위 주석 참고.)
 """
 
 import ctypes
@@ -120,12 +116,15 @@ def make_group_b(name, down_count):
     ]
 
 
-def make_group_c(name, down_count, pre_enter=False):
+def make_group_c(name, down_count, pre_enter=False, tab_before_enter=False):
     """그룹 A 와 흐름은 같고 Alt+T 뒤 ↓ 횟수만 다름 (루트 선택).
 
     pre_enter=True 면 맨 앞에 Enter + 대기를 넣는다.
     차량번호를 입력하고 바로 버튼을 누르면 "중복건입니다" 안내창이 떠 있어서,
     그 창을 먼저 닫아야 이후 입력이 제대로 들어가기 때문.
+
+    tab_before_enter=True 면 마지막 Enter 직전에 Tab 을 한 번 넣는다.
+    (중복건 루트는 Alt+G 뒤 포커스가 다른 칸에 있어 바로 Enter 를 치면 안 먹는다.)
     """
     head = []
     if pre_enter:
@@ -133,11 +132,13 @@ def make_group_c(name, down_count, pre_enter=False):
             {"type": "key", "key": "enter"},
             {"type": "wait", "sec": DEFAULT_PRE_ENTER_WAIT},
         ]
+    tail = [{"type": "key", "key": "tab"}] if tab_before_enter else []
     return head + [
         {"type": "paste", "key": None, "text": name},
         {"type": "key", "key": "alt+t"},
         {"type": "key", "key": "down", "repeat": down_count},
         {"type": "key", "key": "alt+g"},
+    ] + tail + [
         {"type": "key", "key": "enter"},
     ]
 
@@ -168,16 +169,6 @@ DEFAULT_CONFIG = {
     "ocr_popup_seconds": 0,     # 0 = 직접 닫을 때까지 유지
     "tesseract_path": "",       # 윈도우 내장 OCR 이 안 될 때만 경로 지정
 
-    # ── 차량번호 자동인식 (고정 영역, 확인 팝업 없음) ──
-    "ocr_auto_hotkey": "f9",       # 이 키를 누르면 저장된 사진 영역만 캡처해서 곧바로 입력
-    "ocr_auto_suppress": True,     # True = F9 가 원래 프로그램에 입력되지 않음
-    "ocr_auto_region": None,       # "사진영역 설정" 버튼으로 지정되면 {"x","y","w","h"} 로 채워짐
-    # 사진 전체처럼 큰 영역을 고정 캡처하므로 수동 모드와 달리 배율을 직접
-    # 정해서 확대한다 (수동 모드 계산식을 그대로 쓰면 오히려 축소돼 버림).
-    # 그래도 안 읽히면 여기 배율을 3~5 사이로 더 키워서 시도해 볼 것.
-    "ocr_auto_scales": [3.0, 4.5, 2.0],
-    "ocr_auto_pad": 30,
-
     "buttons": [
         {"label": "교차로",        "hotkey": "ctrl+alt+1", "group": "A", "steps": make_group_a("교차로")},
         {"label": "횡단보도",      "hotkey": "ctrl+alt+2", "group": "A", "steps": make_group_a("횡단보도")},
@@ -187,7 +178,7 @@ DEFAULT_CONFIG = {
         {"label": "소방시설",      "hotkey": "ctrl+alt+6", "group": "B", "steps": make_group_b("소방시설", 2)},
         {"label": "시간간격",      "hotkey": "ctrl+alt+7", "group": "C", "steps": make_group_c("시간간격", 5)},
         {"label": "중복건",        "hotkey": "ctrl+alt+8", "group": "C", "pre_enter": True,
-         "steps": make_group_c("중복건", 8, pre_enter=True)},
+         "steps": make_group_c("중복건", 8, pre_enter=True, tab_before_enter=True)},
         {"label": "각도차이",      "hotkey": "ctrl+alt+9", "group": "C", "steps": make_group_c("각도차이", 12)},
         {"label": "기타5분",       "hotkey": "ctrl+alt+`", "group": "A", "steps": make_group_a("기타5분")},
     ],
@@ -263,26 +254,6 @@ def load_config():
         log(f"[오류] buttons.json 읽기 실패, 기본값 사용: {e}")
         CONFIG = json.loads(json.dumps(DEFAULT_CONFIG))
         apply_pre_enter(CONFIG)
-
-
-def save_config_value(key, value):
-    """
-    buttons.json 에 값 하나를 영구 저장한다.
-    (예: 차량번호 자동인식용 사진 영역 좌표 — 재시작해도 다시 지정할 필요 없게)
-    """
-    CONFIG[key] = value
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-    data[key] = value
-    try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        log(f"[설정] {key} 저장됨: {value}")
-    except Exception as e:
-        log(f"[오류] 설정 저장 실패({key}): {e}")
 
 
 # ────────────────────────────────────────────────
@@ -473,63 +444,54 @@ registered_hotkeys = []
 ocr = None          # main 에서 PlateOCR 인스턴스 연결
 
 
-def _register_ocr_hotkey(hk, sup, callback, tag):
-    """
-    OCR 단축키 하나를 등록한다 (수동/자동 공용).
-    1순위: 단일 키는 on_press_key 가 add_hotkey 보다 안정적이다.
-    2순위: 조합키이거나 1순위가 실패한 경우 add_hotkey.
-    3순위: 그래도 실패하면 억제 없이라도 등록.
-    """
-    def _fire(*_a):
-        # keyboard 콜백은 별도 스레드에서 온다. 여기서 예외가 나면
-        # 아무 일도 안 일어난 것처럼 보이므로 반드시 로그를 남긴다.
-        try:
-            log(f"[OCR] {tag} 단축키 감지")
-            callback()
-        except Exception as e:
-            log(f"[OCR] {tag} 실행 실패: {e}")
-
-    if "+" not in hk:
-        try:
-            keyboard.on_press_key(hk, _fire, suppress=sup)
-            registered_hotkeys.append(("__ocr_key__", hk))
-            log(f"[단축키] {tag} '{hk}' 등록 (on_press_key, suppress={sup})")
-            return
-        except Exception as e:
-            log(f"[경고] on_press_key 실패 {hk}: {e}")
-    try:
-        h = keyboard.add_hotkey(hk, _fire, suppress=sup)
-        registered_hotkeys.append(h)
-        log(f"[단축키] {tag} '{hk}' 등록 (add_hotkey, suppress={sup})")
-        return
-    except Exception as e:
-        log(f"[경고] add_hotkey 실패 {hk}: {e}")
-    try:
-        h = keyboard.add_hotkey(hk, _fire, suppress=False)
-        registered_hotkeys.append(h)
-        log(f"[단축키] {tag} '{hk}' 등록 (suppress 없이)")
-    except Exception as e:
-        log(f"[경고] {tag} 단축키 등록 완전 실패 {hk}: {e}")
-
-
 def register_hotkeys():
     unregister_hotkeys()
 
+    # 차량번호 OCR 단축키 (기본 ` )
     if ocr is None:
         log("[단축키] OCR 인스턴스가 없어 건너뜀 (plate_ocr 미로딩)")
     elif not CONFIG.get("ocr_on", True):
         log("[단축키] ocr_on=false 이므로 건너뜀")
     else:
-        _register_ocr_hotkey(
-            CONFIG.get("ocr_hotkey", "`"),
-            bool(CONFIG.get("ocr_suppress", True)),
-            ocr.trigger, "OCR-수동",
-        )
-        _register_ocr_hotkey(
-            CONFIG.get("ocr_auto_hotkey", "f9"),
-            bool(CONFIG.get("ocr_auto_suppress", True)),
-            ocr.trigger_auto, "OCR-자동",
-        )
+        hk = CONFIG.get("ocr_hotkey", "`")
+        sup = bool(CONFIG.get("ocr_suppress", True))
+
+        def _ocr_fire(*_a):
+            # keyboard 콜백은 별도 스레드에서 온다. 여기서 예외가 나면
+            # 아무 일도 안 일어난 것처럼 보이므로 반드시 로그를 남긴다.
+            try:
+                log("[OCR] 단축키 감지 → 드래그 모드")
+                ocr.trigger()
+            except Exception as e:
+                log(f"[OCR] trigger 실패: {e}")
+
+        ok = False
+        # 1순위: 단일 키는 on_press_key 가 add_hotkey 보다 안정적이다
+        if "+" not in hk:
+            try:
+                keyboard.on_press_key(hk, _ocr_fire, suppress=sup)
+                registered_hotkeys.append(("__ocr_key__", hk))
+                log(f"[단축키] OCR '{hk}' 등록 (on_press_key, suppress={sup})")
+                ok = True
+            except Exception as e:
+                log(f"[경고] on_press_key 실패 {hk}: {e}")
+        # 2순위: 조합키이거나 위가 실패한 경우
+        if not ok:
+            try:
+                h = keyboard.add_hotkey(hk, _ocr_fire, suppress=sup)
+                registered_hotkeys.append(h)
+                log(f"[단축키] OCR '{hk}' 등록 (add_hotkey, suppress={sup})")
+                ok = True
+            except Exception as e:
+                log(f"[경고] add_hotkey 실패 {hk}: {e}")
+        # 3순위: 억제 없이라도 등록
+        if not ok:
+            try:
+                h = keyboard.add_hotkey(hk, _ocr_fire, suppress=False)
+                registered_hotkeys.append(h)
+                log(f"[단축키] OCR '{hk}' 등록 (suppress 없이)")
+            except Exception as e:
+                log(f"[경고] OCR 단축키 등록 완전 실패 {hk}: {e}")
 
     for b in CONFIG["buttons"]:
         hk = b.get("hotkey")
@@ -649,28 +611,13 @@ def main():
 
     # ── 차량번호 OCR ──
     if plate_ocr is not None and CONFIG.get("ocr_on", True):
-        ocr = plate_ocr.PlateOCR(
-            root, CONFIG, log=log, status=set_status,
-            paste_callback=paste_text, save_config=save_config_value,
-        )
+        ocr = plate_ocr.PlateOCR(root, CONFIG, log=log, status=set_status)
         ocr.warmup()      # 엔진 미리 로딩 → 첫 인식도 빠르게
         tk.Button(
             frm,
             text=f"차량번호 읽기\n{CONFIG.get('ocr_hotkey', '`')} · 드래그",
             width=13, height=2,
             command=lambda: (ocr.trigger()),
-        ).grid(row=next_row, column=0, sticky="ew", **pad)
-        tk.Button(
-            frm,
-            text=f"차량번호 자동인식\n{CONFIG.get('ocr_auto_hotkey', 'f9').upper()} · 고정영역",
-            width=13, height=2,
-            command=lambda: (ocr.trigger_auto()),
-        ).grid(row=next_row, column=1, sticky="ew", **pad)
-        next_row += 1
-        tk.Button(
-            frm,
-            text="사진영역 설정 (자동인식용, 최초 1회)",
-            command=lambda: (ocr.calibrate_region()),
         ).grid(row=next_row, column=0, columnspan=2, sticky="ew", **pad)
         next_row += 1
 
