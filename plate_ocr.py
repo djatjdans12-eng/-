@@ -856,8 +856,16 @@ class PlateOCR:
         self._pending_mode = "auto"
         self.prev_hwnd = user32.GetForegroundWindow()
         x, y, w, h = region["x"], region["y"], region["w"], region["h"]
-        self.log(f"[OCR-자동] trigger {region}")
-        self.root.after(0, lambda: self._capture_and_read(x, y, w, h))
+        # 자동 모드는 '사진 전체' 처럼 큰 영역을 고정 캡처하므로, 수동 모드의
+        # (목표높이 ÷ 드래그높이) 축소 계산을 쓰면 안 된다 — 그 계산은
+        # 사람이 번호판만 딱 드래그했을 때 기준이라, 사진 전체 높이로 나누면
+        # 배율이 1 미만이 되어 이미 작은 번호판을 오히려 더 축소시켜 버린다.
+        # 대신 사진 전체를 고정 배율로 확대해서 번호판 부분을 키운다.
+        scales = self.cfg.get("ocr_auto_scales", [3.0, 4.5, 2.0])
+        pad = self.cfg.get("ocr_auto_pad", 30)
+        self.log(f"[OCR-자동] trigger {region} · 배율 {scales}")
+        self.root.after(0, lambda: self._capture_and_read(
+            x, y, w, h, scales=scales, pad=pad, try_rotation=False))
 
     # ── 1단계 : 드래그 오버레이 (수동 인식 / 사진영역 설정 공용) ──
     def _show_overlay(self):
@@ -945,22 +953,31 @@ class PlateOCR:
         ov.focus_force()
 
     # ── 2단계 : 캡처 + 인식 (배율/전처리를 바꿔가며 시도) ──
-    def _capture_and_read(self, x, y, w, h):
+    def _capture_and_read(self, x, y, w, h, scales=None, pad=None, try_rotation=True):
+        """
+        scales 를 직접 넘기면(자동 모드) 아래의 '목표 높이 ÷ 드래그 높이' 계산을
+        건너뛴다. 이 계산은 "번호판만 딱 드래그했다" 는 전제라서, 사진 전체처럼
+        큰 영역을 그대로 넣으면 오히려 확대가 아니라 축소가 되어 이미 작은
+        번호판이 더 작아져 버린다 (자동 모드가 인식을 못하던 원인).
+        """
         t0 = time.time()
 
-        # OCR 엔진은 글자가 무조건 클수록 좋지 않다. 잘 맞는 구간이 있다.
-        # 드래그한 높이를 기준으로 목표 높이 몇 개를 잡아 배율을 만든다.
-        targets = self.cfg.get("ocr_target_heights", [64, 100, 150, 40])
-        scales = []
-        for th in targets:
-            sc = round(max(0.5, min(8.0, float(th) / max(1, h))), 2)
-            if sc not in scales:
-                scales.append(sc)
-        self.log(f"[OCR] 영역 {w}x{h} → 배율 {scales}")
+        if scales is None:
+            # OCR 엔진은 글자가 무조건 클수록 좋지 않다. 잘 맞는 구간이 있다.
+            # 드래그한 높이를 기준으로 목표 높이 몇 개를 잡아 배율을 만든다.
+            targets = self.cfg.get("ocr_target_heights", [64, 100, 150, 40])
+            scales = []
+            for th in targets:
+                sc = round(max(0.5, min(8.0, float(th) / max(1, h))), 2)
+                if sc not in scales:
+                    scales.append(sc)
+            self.log(f"[OCR] 영역 {w}x{h} → 배율 {scales}")
+        else:
+            self.log(f"[OCR] 영역 {w}x{h} → 고정 배율 {scales}")
 
         # 미리보기용 캡처 (가장 첫 배율)
         try:
-            sw0, sh0, bgra0 = grab_region(x, y, w, h, scales[0])
+            sw0, sh0, bgra0 = grab_region(x, y, w, h, scales[0], pad=pad)
         except Exception as e:
             self.log(f"[OCR] 캡처 실패: {e}")
             self.status(f"캡처 실패: {e}")
@@ -1008,7 +1025,7 @@ class PlateOCR:
                     if i == 0:
                         sw, sh, data = sw0, sh0, bgra0
                     else:
-                        sw, sh, data = grab_region(x, y, w, h, sc)
+                        sw, sh, data = grab_region(x, y, w, h, sc, pad=pad)
 
                     if attempt(f"x{sc} 원본", sw, sh, data):
                         break
@@ -1020,7 +1037,8 @@ class PlateOCR:
                         break
                 # 배율·전처리로 안 되면 기울기를 의심한다.
                 # 비스듬히 찍힌 번호판은 몇 도만 돌려도 결과가 달라진다.
-                if not best[2]:
+                # (자동 모드=사진 전체 캡처에서는 사진 자체를 돌리는 게 무의미하므로 건너뜀)
+                if try_rotation and not best[2]:
                     angles = self.cfg.get("ocr_angles", [-7, 7, -14, 14])
                     sc = scales[0]
                     for ang in angles:

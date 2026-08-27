@@ -172,6 +172,11 @@ DEFAULT_CONFIG = {
     "ocr_auto_hotkey": "f9",       # 이 키를 누르면 저장된 사진 영역만 캡처해서 곧바로 입력
     "ocr_auto_suppress": True,     # True = F9 가 원래 프로그램에 입력되지 않음
     "ocr_auto_region": None,       # "사진영역 설정" 버튼으로 지정되면 {"x","y","w","h"} 로 채워짐
+    # 사진 전체처럼 큰 영역을 고정 캡처하므로 수동 모드와 달리 배율을 직접
+    # 정해서 확대한다 (수동 모드 계산식을 그대로 쓰면 오히려 축소돼 버림).
+    # 그래도 안 읽히면 여기 배율을 3~5 사이로 더 키워서 시도해 볼 것.
+    "ocr_auto_scales": [3.0, 4.5, 2.0],
+    "ocr_auto_pad": 30,
 
     "buttons": [
         {"label": "교차로",        "hotkey": "ctrl+alt+1", "group": "A", "steps": make_group_a("교차로")},
