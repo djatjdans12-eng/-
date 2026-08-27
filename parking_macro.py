@@ -116,15 +116,13 @@ def make_group_b(name, down_count):
     ]
 
 
-def make_group_c(name, down_count, pre_enter=False, tab_before_enter=False):
+def make_group_c(name, down_count, pre_enter=False):
     """그룹 A 와 흐름은 같고 Alt+T 뒤 ↓ 횟수만 다름 (루트 선택).
 
     pre_enter=True 면 맨 앞에 Enter + 대기를 넣는다.
-    차량번호를 입력하고 바로 버튼을 누르면 "중복건입니다" 안내창이 떠 있어서,
-    그 창을 먼저 닫아야 이후 입력이 제대로 들어가기 때문.
-
-    tab_before_enter=True 면 마지막 Enter 직전에 Tab 을 한 번 넣는다.
-    (중복건 루트는 Alt+G 뒤 포커스가 다른 칸에 있어 바로 Enter 를 치면 안 먹는다.)
+    ※ 중복건은 이 방식을 쓰지 않는다. "중복건입니다" 안내창이 매크로가 보낸
+      Enter 로는 닫히지 않아서(타이밍 문제로 보임), 사람이 안내창을 직접 닫고
+      원하는 칸에 커서를 둔 다음 버튼을 누르는 방식으로 바꿨다.
     """
     head = []
     if pre_enter:
@@ -132,13 +130,11 @@ def make_group_c(name, down_count, pre_enter=False, tab_before_enter=False):
             {"type": "key", "key": "enter"},
             {"type": "wait", "sec": DEFAULT_PRE_ENTER_WAIT},
         ]
-    tail = [{"type": "key", "key": "tab"}] if tab_before_enter else []
     return head + [
         {"type": "paste", "key": None, "text": name},
         {"type": "key", "key": "alt+t"},
         {"type": "key", "key": "down", "repeat": down_count},
         {"type": "key", "key": "alt+g"},
-    ] + tail + [
         {"type": "key", "key": "enter"},
     ]
 
@@ -154,9 +150,10 @@ DEFAULT_CONFIG = {
 
     # ── 시작 전 Enter (안내창 닫기) ──
     #   여기에 적힌 이름의 버튼은 동작 시작하자마자 Enter 를 한 번 누른다.
-    #   차량번호 입력 직후 버튼을 누르면 "중복건입니다" 창이 떠 있는 상태라,
-    #   그 창을 닫지 않으면 이후 Alt+T 등이 먹지 않는다.
-    "pre_enter_labels": ["중복건"],
+    #   ※ 지금은 비어 있다. 중복건에 쓰던 기능인데, "중복건입니다" 안내창이
+    #     매크로가 보낸 Enter 로는 닫히지 않아서 뺐다. 안내창은 사람이 직접 닫고,
+    #     원하는 칸에 커서를 둔 뒤 버튼을 누르면 그 자리에서 입력이 시작된다.
+    "pre_enter_labels": [],
     "pre_enter_wait": DEFAULT_PRE_ENTER_WAIT,
 
     # ── 차량번호 OCR ──
@@ -177,8 +174,8 @@ DEFAULT_CONFIG = {
         {"label": "어린이보호구역", "hotkey": "ctrl+alt+5", "group": "B", "steps": make_group_b("어린이보호구역", 1)},
         {"label": "소방시설",      "hotkey": "ctrl+alt+6", "group": "B", "steps": make_group_b("소방시설", 2)},
         {"label": "시간간격",      "hotkey": "ctrl+alt+7", "group": "C", "steps": make_group_c("시간간격", 5)},
-        {"label": "중복건",        "hotkey": "ctrl+alt+8", "group": "C", "pre_enter": True,
-         "steps": make_group_c("중복건", 8, pre_enter=True, tab_before_enter=True)},
+        {"label": "중복건",        "hotkey": "ctrl+alt+8", "group": "C",
+         "steps": make_group_c("중복건", 8)},
         {"label": "각도차이",      "hotkey": "ctrl+alt+9", "group": "C", "steps": make_group_c("각도차이", 12)},
         {"label": "기타5분",       "hotkey": "ctrl+alt+`", "group": "A", "steps": make_group_a("기타5분")},
     ],

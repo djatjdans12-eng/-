@@ -1,4 +1,5 @@
 {
+  "pre_enter_labels": [],
   "key_delay": 0.06,
   "paste_delay": 0.2,
   "start_delay": 0.12,
@@ -326,11 +327,6 @@
       "group": "C",
       "steps": [
         {
-          "type": "key",
-          "key": "tab",
-          "repeat": 6
-        },
-        {
           "type": "paste",
           "key": null,
           "text": "중복건"
@@ -353,10 +349,6 @@
         {
           "type": "key",
           "key": "alt+g"
-        },
-        {
-          "type": "key",
-          "key": "tab"
         },
         {
           "type": "key",
