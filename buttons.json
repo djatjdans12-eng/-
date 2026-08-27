@@ -1,0 +1,450 @@
+{
+  "key_delay": 0.06,
+  "paste_delay": 0.2,
+  "start_delay": 0.12,
+  "clip_restore_delay": 0.35,
+  "hotkeys_on": true,
+  "modifier_wait": 2.0,
+  "hotkey_suppress": false,
+  "ocr_on": true,
+  "ocr_hotkey": "`",
+  "ocr_suppress": true,
+  "ocr_lang": "ko",
+  "ocr_overlay_alpha": 0.3,
+  "ocr_popup_seconds": 0,
+  "tesseract_path": "",
+  "ocr_target_heights": [
+    64,
+    100,
+    150,
+    40
+  ],
+  "ocr_capture_delay": 0.18,
+  "ocr_keep_capture": true,
+  "ocr_angles": [
+    -7,
+    7,
+    -14,
+    14
+  ],
+  "buttons": [
+    {
+      "label": "교차로",
+      "hotkey": "ctrl+alt+1",
+      "group": "A",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 7
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "교차로"
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "횡단보도",
+      "hotkey": "ctrl+alt+2",
+      "group": "A",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 7
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "횡단보도"
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "인도",
+      "hotkey": "ctrl+alt+3",
+      "group": "A",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 7
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "인도"
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "버스정류장",
+      "hotkey": "ctrl+alt+4",
+      "group": "A",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 7
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "버스정류장"
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "어린이보호구역",
+      "hotkey": "ctrl+alt+5",
+      "group": "B",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 7
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "어린이보호구역"
+        },
+        {
+          "type": "key",
+          "key": "shift+tab",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 1
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "소방시설",
+      "hotkey": "ctrl+alt+6",
+      "group": "B",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 7
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "소방시설"
+        },
+        {
+          "type": "key",
+          "key": "shift+tab",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "시간간격",
+      "hotkey": "ctrl+alt+7",
+      "group": "C",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 6
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "시간간격"
+        },
+        {
+          "type": "click_image",
+          "image": "제외여부.png",
+          "prefer": "rightmost",
+          "after": 0.25
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 5
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "중복건",
+      "hotkey": "ctrl+alt+8",
+      "group": "C",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 6
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "중복건"
+        },
+        {
+          "type": "click_image",
+          "image": "제외여부.png",
+          "prefer": "rightmost",
+          "after": 0.25
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 8
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "각도차이",
+      "hotkey": "ctrl+alt+9",
+      "group": "C",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 6
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "각도차이"
+        },
+        {
+          "type": "click_image",
+          "image": "제외여부.png",
+          "prefer": "rightmost",
+          "after": 0.25
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 12
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    },
+    {
+      "label": "기타5분",
+      "hotkey": "ctrl+alt+`",
+      "group": "A",
+      "steps": [
+        {
+          "type": "key",
+          "key": "tab",
+          "repeat": 7
+        },
+        {
+          "type": "paste",
+          "key": null,
+          "text": "기타5분"
+        },
+        {
+          "type": "key",
+          "key": "alt+t"
+        },
+        {
+          "type": "key",
+          "key": "down",
+          "repeat": 2
+        },
+        {
+          "type": "key",
+          "key": "alt+g"
+        },
+        {
+          "type": "key",
+          "key": "enter"
+        },
+        {
+          "type": "key",
+          "key": "ctrl+right"
+        }
+      ]
+    }
+  ]
+}
