@@ -65,6 +65,12 @@ except Exception as _e:      # plate_ocr.py 가 없어도 나머지 기능은 �
     plate_ocr = None
     print(f"[안내] plate_ocr.py 를 불러오지 못했습니다 ({_e}) — OCR 기능 없이 실행합니다")
 
+try:
+    import road_addr
+except Exception as _e:
+    road_addr = None
+    print(f"[안내] road_addr.py 를 불러오지 못했습니다 ({_e}) — 도로명 변환 없이 실행합니다")
+
 
 # ────────────────────────────────────────────────
 # 경로 / 로그
@@ -94,18 +100,29 @@ def log(msg):
 DEFAULT_PRE_ENTER_WAIT = 0.35   # 시작 Enter 로 안내창을 닫은 뒤 기다리는 시간(초)
 
 
-def make_group_a(name):
+# 위반내용 칸까지는 Tab 7번이다. 그런데 3번째에서 잡히는 칸이 '위반위치'(지번주소)라,
+# 거기서 한 번 멈춰 도로명으로 바꾼 뒤 나머지 4번을 마저 누른다.
+def tab_to_content():
     return [
+        {"type": "key", "key": "tab", "repeat": 3},
+        {"type": "roadname"},
+        {"type": "key", "key": "tab", "repeat": 4},
+    ]
+
+
+def make_group_a(name):
+    return tab_to_content() + [
         {"type": "paste", "key": None, "text": name},
         {"type": "key", "key": "alt+t"},
         {"type": "key", "key": "down", "repeat": 2},
         {"type": "key", "key": "alt+g"},
         {"type": "key", "key": "enter"},
+        {"type": "key", "key": "ctrl+right"},
     ]
 
 
 def make_group_b(name, down_count):
-    return [
+    return tab_to_content() + [
         {"type": "paste", "key": None, "text": name},
         {"type": "key", "key": "shift+tab", "repeat": 2},
         {"type": "key", "key": "down", "repeat": down_count},
@@ -113,6 +130,7 @@ def make_group_b(name, down_count):
         {"type": "key", "key": "down", "repeat": 2},
         {"type": "key", "key": "alt+g"},
         {"type": "key", "key": "enter"},
+        {"type": "key", "key": "ctrl+right"},
     ]
 
 
@@ -165,6 +183,19 @@ DEFAULT_CONFIG = {
     "ocr_overlay_alpha": 0.30,
     "ocr_popup_seconds": 0,     # 0 = 직접 닫을 때까지 유지
     "tesseract_path": "",       # 윈도우 내장 OCR 이 안 될 때만 경로 지정
+
+    # ── 지번주소 → 도로명 자동 변환 ──
+    #   Tab 3번째에서 잡히는 '위반위치' 칸의 지번주소를 도로명으로 바꿔 넣는다.
+    #   승인키는 https://business.juso.go.kr → 개발자센터 에서 무료로 발급받는다.
+    #   키가 비어 있으면 이 단계는 조용히 건너뛴다 (나머지 매크로는 정상 동작).
+    #   시험용으로 "TESTJUSOGOKR" 을 쓸 수 있지만 공용 데모 키라 실제 업무에는
+    #   반드시 본인 키를 발급받아 쓸 것.
+    "roadname_on": True,
+    "roadname_api_key": "",
+    "roadname_api_url": "https://business.juso.go.kr/addrlink/addrLinkApi.do",
+    "roadname_region": "경남 양산시",   # 지번주소 앞에 붙여서 검색할 지역
+    "roadname_timeout": 4.0,
+    "roadname_cache": True,
 
     "buttons": [
         {"label": "교차로",        "hotkey": "ctrl+alt+1", "group": "A", "steps": make_group_a("교차로")},
@@ -370,6 +401,103 @@ def paste_text(text):
     threading.Thread(target=restore, daemon=True).start()
 
 
+_CLIP_MARK = "\x00__매크로_표식__\x00"
+
+
+def read_selected_text(timeout=0.6):
+    """
+    지금 블럭 잡혀 있는 텍스트를 Ctrl+C 로 읽어 온다.
+
+    먼저 클립보드에 표식을 넣고, 표식이 바뀔 때까지 기다린다.
+    그냥 Ctrl+C 하고 바로 읽으면 복사가 실패했을 때 '이전 클립보드 내용'을
+    주소로 착각해서 엉뚱한 값을 검색하게 된다.
+    """
+    try:
+        pyperclip.copy(_CLIP_MARK)
+    except Exception:
+        return ""
+
+    keyboard.send("ctrl+c")
+
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        time.sleep(0.03)
+        try:
+            v = pyperclip.paste()
+        except Exception:
+            continue
+        if v and v != _CLIP_MARK:
+            return v.strip()
+    return ""
+
+
+def convert_roadname():
+    """
+    블럭 잡힌 지번주소를 도로명으로 바꿔 넣는다.
+
+    확실할 때만 덮어쓴다. 못 찾거나 후보가 갈리면 원래 지번주소를 그대로 둔다.
+    (엉뚱한 주소로 과태료가 나가면 실제 피해가 생긴다)
+
+    click_image 와 달리 실패해도 매크로를 중단하지 않는다.
+    지번주소가 그대로 남아 있을 뿐이라 이후 단계에 영향이 없기 때문이다.
+    """
+    if road_addr is None or not CONFIG.get("roadname_on", True):
+        return
+
+    api_key = (CONFIG.get("roadname_api_key") or "").strip()
+    if not api_key:
+        log("[도로명] 승인키가 없어 건너뜁니다 (buttons.json 의 roadname_api_key)")
+        return
+
+    try:
+        old_clip = pyperclip.paste()
+    except Exception:
+        old_clip = ""
+
+    try:
+        jibun = read_selected_text()
+        if not jibun:
+            log("[도로명] 칸에서 주소를 읽지 못했습니다 — 원본 유지")
+            return
+        if road_addr.looks_like_roadname(jibun):
+            log(f"[도로명] 이미 도로명입니다: '{jibun}' — 건너뜀")
+            return
+
+        set_status("도로명 조회 중…")
+        rn = road_addr.lookup_roadname(
+            jibun,
+            region=CONFIG.get("roadname_region", ""),
+            api_key=api_key,
+            api_url=CONFIG.get("roadname_api_url", road_addr.DEFAULT_API_URL),
+            timeout=float(CONFIG.get("roadname_timeout", 4.0)),
+            use_cache=bool(CONFIG.get("roadname_cache", True)),
+            log=log,
+        )
+        if not rn:
+            log(f"[도로명] '{jibun}' → 확실한 도로명 없음, 지번주소 그대로 둠")
+            set_status("도로명 못 찾음 — 지번주소 유지")
+            return
+
+        # Ctrl+C 후에도 칸의 블럭 선택은 유지되므로 Ctrl+V 가 그대로 덮어쓴다
+        pyperclip.copy(rn)
+        time.sleep(0.05)
+        if modifiers_down():
+            wait_modifiers_released()
+        keyboard.send("ctrl+v")
+        time.sleep(CONFIG.get("paste_delay", 0.20))
+        log(f"[도로명] '{jibun}' → '{rn}' 입력")
+        set_status(f"도로명: {rn}")
+
+    except Exception as e:
+        log(f"[도로명] 오류(무시하고 계속): {e}")
+    finally:
+        # 뒤에 이어지는 paste 단계와 충돌하지 않도록 복원은 동기로 처리한다
+        try:
+            pyperclip.copy(old_clip)
+        except Exception:
+            pass
+
+
 def run_steps(label, steps):
     global busy
     with busy_lock:
@@ -401,6 +529,9 @@ def run_steps(label, steps):
 
             elif stype == "wait":
                 time.sleep(float(st.get("sec", 0.1)))
+
+            elif stype == "roadname":
+                convert_roadname()
 
             elif stype == "click_image":
                 # 화면에서 지정한 그림을 찾아 클릭한다.
