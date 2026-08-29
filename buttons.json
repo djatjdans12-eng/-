@@ -36,6 +36,9 @@
   "roadname_cache": true,
   "roadname_use_coords": true,
   "kakao_api_key": "",
+  "coord_click_pos": null,
+  "coord_click_delay": 0.15,
+  "roadname_use_jibun": false,
   "buttons": [
     {
       "label": "교차로",

@@ -46,6 +46,100 @@ user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
 ENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 user32.EnumChildWindows.argtypes = [ctypes.c_void_p, ENUMPROC, ctypes.c_void_p]
 
+user32.GetFocus.restype = ctypes.c_void_p
+user32.SetFocus.restype = ctypes.c_void_p
+user32.SetFocus.argtypes = [ctypes.c_void_p]
+user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+user32.GetWindowThreadProcessId.restype = wt.DWORD
+user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+user32.AttachThreadInput.argtypes = [wt.DWORD, wt.DWORD, ctypes.c_bool]
+
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+
+
+class GUITHREADINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.DWORD), ("flags", wt.DWORD),
+                ("hwndActive", ctypes.c_void_p), ("hwndFocus", ctypes.c_void_p),
+                ("hwndCapture", ctypes.c_void_p), ("hwndMenuOwner", ctypes.c_void_p),
+                ("hwndMoveSize", ctypes.c_void_p), ("hwndCaret", ctypes.c_void_p),
+                ("rcCaret", wt.RECT)]
+
+
+user32.GetGUIThreadInfo.argtypes = [wt.DWORD, ctypes.POINTER(GUITHREADINFO)]
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+def get_cursor_pos():
+    p = POINT()
+    user32.GetCursorPos(ctypes.byref(p))
+    return p.x, p.y
+
+
+def focused_control():
+    """
+    지금 글자를 입력받고 있는 컨트롤의 핸들.
+
+    GetFocus 는 자기 스레드 것만 알려주므로, 다른 프로그램의 포커스를 알려면
+    GetGUIThreadInfo 로 그 창의 스레드에게 물어봐야 한다.
+    """
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return None
+    tid = user32.GetWindowThreadProcessId(hwnd, None)
+    info = GUITHREADINFO()
+    info.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if not user32.GetGUIThreadInfo(tid, ctypes.byref(info)):
+        return None
+    return info.hwndFocus or None
+
+
+def restore_focus(hwnd):
+    """
+    아까 그 컨트롤로 포커스를 돌려준다.
+
+    SetFocus 는 '입력 큐를 공유하는 스레드' 안에서만 먹으므로,
+    AttachThreadInput 으로 잠깐 붙었다가 뗀다.
+    """
+    if not hwnd:
+        return False
+    target_tid = user32.GetWindowThreadProcessId(hwnd, None)
+    my_tid = ctypes.windll.kernel32.GetCurrentThreadId()
+    attached = False
+    try:
+        if target_tid and target_tid != my_tid:
+            attached = bool(user32.AttachThreadInput(my_tid, target_tid, True))
+        user32.SetFocus(hwnd)
+        return True
+    except Exception:
+        return False
+    finally:
+        if attached:
+            try:
+                user32.AttachThreadInput(my_tid, target_tid, False)
+            except Exception:
+                pass
+
+
+def click_at(x, y, settle=0.12, restore_cursor=True):
+    """지정 좌표를 왼쪽 클릭한다 (img_click.click_at 과 같은 방식)."""
+    before = POINT()
+    if restore_cursor:
+        user32.GetCursorPos(ctypes.byref(before))
+
+    user32.SetCursorPos(int(x), int(y))
+    time.sleep(settle)
+    user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.03)
+    user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+    time.sleep(settle)
+
+    if restore_cursor:
+        user32.SetCursorPos(before.x, before.y)
+
 # 위도:35.357891  경도:129.047210   (콜론·공백·등호 어떤 조합이든)
 _LAT = re.compile(r"위\s*도\s*[:=]?\s*(-?\d{1,3}\.\d+)")
 _LON = re.compile(r"경\s*도\s*[:=]?\s*(-?\d{1,3}\.\d+)")
