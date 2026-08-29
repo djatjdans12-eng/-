@@ -64,6 +64,34 @@ def clean_keyword(text):
     return _SPACES.sub(" ", s).strip()
 
 
+def _pick_token(text, suffixes):
+    """'하북면 순지리 830' 에서 '하북면' 처럼 지역을 가리키는 낱말을 뽑는다."""
+    for tok in (text or "").split():
+        if any(tok.endswith(s) for s in suffixes):
+            return tok
+    return ""
+
+
+def matches_query(juso, dong, sgg):
+    """
+    돌아온 결과가 정말 우리가 물어본 동네인지 확인한다.
+
+    API 는 못 찾으면 엉뚱한 동네를 그럴듯하게 돌려주기도 한다.
+    (시험용 키 TESTJUSOGOKR 은 검색어와 무관하게 서울 양재동 샘플만 돌려준다)
+    이걸 안 거르면 '경남 양산시 유산동' 을 물어보고 '서울 강남대로12길' 을
+    받아서, 그것도 여러 건이 전부 같은 도로명이니 확실하다고 착각하게 된다.
+    과태료가 엉뚱한 위치로 나가는 사고라 반드시 막아야 한다.
+    """
+    if sgg and sgg not in (juso.get("sggNm") or ""):
+        return False
+    if dong:
+        emd = juso.get("emdNm") or ""
+        li = juso.get("liNm") or ""
+        if dong not in emd and dong not in li:
+            return False
+    return True
+
+
 def looks_like_roadname(text):
     """
     이미 도로명으로 바뀐 칸인지 본다.
@@ -176,8 +204,19 @@ def lookup_roadname(jibun, region="", api_key="", api_url=DEFAULT_API_URL,
         log(f"[도로명] 검색 결과 없음: '{keyword}'")
         return ""
 
+    # 물어본 동네가 맞는 결과만 남긴다
+    dong = _pick_token(jibun, ("동", "리", "면", "읍", "가"))
+    sgg = _pick_token(region, ("시", "군", "구"))
+    kept = [j for j in juso if matches_query(j, dong, sgg)]
+    if not kept:
+        got = juso[0]
+        log(f"[도로명] 다른 동네가 왔습니다 "
+            f"(찾는 곳: {sgg} {dong} / 받은 곳: {got.get('sggNm','')} "
+            f"{got.get('emdNm','')}) → 지번주소 유지")
+        return ""
+
     names = []
-    for j in juso:
+    for j in kept:
         rn = (j.get("rn") or "").strip()
         if rn and rn not in names:
             names.append(rn)
@@ -191,7 +230,7 @@ def lookup_roadname(jibun, region="", api_key="", api_url=DEFAULT_API_URL,
         return ""
 
     rn = names[0]
-    log(f"[도로명] '{keyword}' → '{rn}' ({len(juso)}건)")
+    log(f"[도로명] '{keyword}' → '{rn}' ({len(kept)}/{len(juso)}건)")
     if use_cache:
         _mem_cache[keyword] = rn
         _save_cache()
@@ -268,10 +307,24 @@ def main(argv):
         print("  → 승인키가 맞는지, 신청한 API 가 '검색 API' 인지 확인하세요.")
         return
 
+    dong = _pick_token(jibun, ("동", "리", "면", "읍", "가"))
+    sgg = _pick_token(region, ("시", "군", "구"))
+
     print(f"검색 결과 {len(juso)}건")
+    hit = 0
     for n, j in enumerate(juso, 1):
-        print(f"  {n}. rn='{j.get('rn','')}'  |  {j.get('roadAddr','')}")
-        print(f"     (지번: {j.get('jibunAddr','')})")
+        ok = matches_query(j, dong, sgg)
+        hit += 1 if ok else 0
+        print(f"  {n}. {'○' if ok else '✕'} rn='{j.get('rn','')}'  |  {j.get('roadAddr','')}")
+        print(f"       (지번: {j.get('jibunAddr','')})")
+
+    if juso and hit == 0:
+        print()
+        print(f"  ※ 물어본 곳({sgg} {dong})과 다른 동네만 왔습니다.")
+        if key == "TESTJUSOGOKR":
+            print("     시험용 키(TESTJUSOGOKR)는 검색어와 상관없이 똑같은 샘플만")
+            print("     돌려줍니다. 통신이 되는지만 확인되는 것이고, 실제 조회는")
+            print("     본인 승인키를 발급받아야 됩니다.")
 
     print("-" * 55)
     rn = lookup_roadname(jibun, region, key, api_url, use_cache=False)
