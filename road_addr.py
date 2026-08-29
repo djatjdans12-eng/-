@@ -54,8 +54,56 @@ _SPACES = re.compile(r"\s+")
 _JIBUN_NUM = re.compile(r"\d+\s*-\s*\d+")
 
 _CACHE_NAME = "도로명캐시.json"
+_KEY_NAME = "승인키.txt"
 _mem_cache = {}
 _cache_loaded = False
+
+
+def _base_dir():
+    return os.path.dirname(os.path.abspath(sys.argv[0])) or os.getcwd()
+
+
+def load_api_key(cfg_key="", log=None):
+    """
+    승인키를 찾는다. 앞에서 찾으면 뒤는 안 본다.
+
+      1) buttons.json 의 roadname_api_key   (넘겨받은 cfg_key)
+      2) 스크립트 폴더의 승인키.txt
+      3) 환경변수 JUSO_API_KEY
+
+    승인키.txt 를 두는 쪽을 권한다. buttons.json 은 버튼 단계가 바뀔 때마다
+    새로 받아 덮어쓰는 파일이라, 거기 적어 두면 갱신할 때마다 키가 지워진다.
+    (키가 없으면 조용히 건너뛰도록 되어 있어서 멈춘 걸 알아채기도 어렵다)
+    """
+    if (cfg_key or "").strip():
+        return cfg_key.strip(), "buttons.json"
+
+    path = os.path.join(_base_dir(), _KEY_NAME)
+    try:
+        with open(path, encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    return line, _KEY_NAME
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        if log:
+            log(f"[도로명] {_KEY_NAME} 읽기 실패: {e}")
+
+    env = (os.environ.get("JUSO_API_KEY") or "").strip()
+    if env:
+        return env, "환경변수 JUSO_API_KEY"
+
+    return "", ""
+
+
+def key_search_hint():
+    """키를 못 찾았을 때 어디를 봤는지 알려 주는 문구."""
+    return (f"승인키를 찾지 못했습니다. 다음 중 한 곳에 넣어 주세요:\n"
+            f"  1) {os.path.join(_base_dir(), _KEY_NAME)}  ← 여기가 편합니다\n"
+            f"  2) buttons.json 의 roadname_api_key\n"
+            f"  3) 환경변수 JUSO_API_KEY")
 
 
 def clean_keyword(text):
@@ -109,8 +157,7 @@ def looks_like_roadname(text):
 # 캐시 — 같은 동네 위반건이 연달아 들어오므로 적중률이 높다
 # ────────────────────────────────────────────────
 def _cache_path():
-    base = os.path.dirname(os.path.abspath(sys.argv[0])) or os.getcwd()
-    return os.path.join(base, _CACHE_NAME)
+    return os.path.join(_base_dir(), _CACHE_NAME)
 
 
 def _load_cache():
@@ -240,11 +287,10 @@ def lookup_roadname(jibun, region="", api_key="", api_url=DEFAULT_API_URL,
 # ────────────────────────────────────────────────
 # 단독 실행 : 매크로 없이 API 만 확인
 # ────────────────────────────────────────────────
-def _load_key_and_region_from_config():
-    """buttons.json 이 옆에 있으면 승인키와 지역을 거기서 읽어 온다."""
-    base = os.path.dirname(os.path.abspath(sys.argv[0])) or os.getcwd()
+def _load_config():
+    """buttons.json 이 옆에 있으면 설정을 읽어 온다."""
     try:
-        with open(os.path.join(base, "buttons.json"), encoding="utf-8") as f:
+        with open(os.path.join(_base_dir(), "buttons.json"), encoding="utf-8") as f:
             cfg = json.load(f)
         return (cfg.get("roadname_api_key", ""),
                 cfg.get("roadname_region", ""),
@@ -254,7 +300,8 @@ def _load_key_and_region_from_config():
 
 
 def main(argv):
-    key, region, api_url = _load_key_and_region_from_config()
+    cfg_key, region, api_url = _load_config()
+    key, key_from = load_api_key(cfg_key)
 
     args = []
     i = 0
@@ -262,6 +309,7 @@ def main(argv):
         a = argv[i]
         if a == "--key" and i + 1 < len(argv):
             key = argv[i + 1]
+            key_from = "--key"
             i += 2
         elif a == "--region" and i + 1 < len(argv):
             region = argv[i + 1]
@@ -279,9 +327,10 @@ def main(argv):
         return
 
     if not key:
-        print("[안내] 승인키가 없습니다.")
-        print("  buttons.json 의 roadname_api_key 에 넣거나 --key 로 넘기세요.")
-        print("  시험용: python road_addr.py --key TESTJUSOGOKR \"유산동 159-71\"")
+        print("[안내] " + key_search_hint())
+        print()
+        print("  승인키.txt 만드는 법 — 메모장에 키만 한 줄 붙여넣고")
+        print(f"  '{_KEY_NAME}' 이름으로 이 폴더에 저장하면 됩니다.")
         return
 
     jibun = " ".join(args)
@@ -292,7 +341,7 @@ def main(argv):
     print(f"지역   : {region or '(없음)'}")
     print(f"검색어 : {keyword}")
     print(f"주소   : {api_url}")
-    print(f"승인키 : {key[:8]}…")
+    print(f"승인키 : {key[:8]}…  (출처: {key_from})")
     print("-" * 55)
 
     try:

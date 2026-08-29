@@ -187,9 +187,12 @@ DEFAULT_CONFIG = {
     # ── 지번주소 → 도로명 자동 변환 ──
     #   Tab 3번째에서 잡히는 '위반위치' 칸의 지번주소를 도로명으로 바꿔 넣는다.
     #   승인키는 https://business.juso.go.kr → 개발자센터 에서 무료로 발급받는다.
-    #   키가 비어 있으면 이 단계는 조용히 건너뛴다 (나머지 매크로는 정상 동작).
-    #   시험용으로 "TESTJUSOGOKR" 을 쓸 수 있지만 공용 데모 키라 실제 업무에는
-    #   반드시 본인 키를 발급받아 쓸 것.
+    #   키가 없으면 이 단계는 건너뛴다 (나머지 매크로는 정상 동작).
+    #
+    #   ※ 승인키는 아래 roadname_api_key 대신 '승인키.txt' 에 넣기를 권한다.
+    #     이 buttons.json 은 버튼 단계가 바뀌면 새로 받아 덮어쓰는 파일이라,
+    #     여기 적어 두면 갱신할 때마다 키가 지워진다.
+    #     찾는 순서: roadname_api_key → 승인키.txt → 환경변수 JUSO_API_KEY
     "roadname_on": True,
     "roadname_api_key": "",
     "roadname_api_url": "https://business.juso.go.kr/addrlink/addrLinkApi.do",
@@ -444,9 +447,12 @@ def convert_roadname():
     if road_addr is None or not CONFIG.get("roadname_on", True):
         return
 
-    api_key = (CONFIG.get("roadname_api_key") or "").strip()
+    api_key, key_from = road_addr.load_api_key(
+        CONFIG.get("roadname_api_key", ""), log=log)
     if not api_key:
-        log("[도로명] 승인키가 없어 건너뜁니다 (buttons.json 의 roadname_api_key)")
+        # 어디를 찾아봤는지 남긴다. 키가 지워진 걸 모르고 쓰는 상황을 막기 위해서다.
+        for line in road_addr.key_search_hint().splitlines():
+            log("[도로명] " + line)
         return
 
     try:
