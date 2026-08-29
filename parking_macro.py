@@ -199,6 +199,13 @@ DEFAULT_CONFIG = {
     "roadname_region": "경남 양산시",   # 지번주소 앞에 붙여서 검색할 지역
     "roadname_timeout": 4.0,
     "roadname_cache": True,
+    #   도로명주소는 '건물'에 부여된다. 나대지·공터처럼 건물이 없는 지번에는
+    #   도로명주소가 아예 없어서, 그런 곳은 같은 동네에서 번지가 가장 가까운
+    #   건물의 도로명을 빌려 쓴다(추정). 번지 차이가 아래 값을 넘으면 포기하고
+    #   지번주소를 그대로 둔다. 추정으로 들어간 건은 로그에 '추정' 으로 남는다.
+    #   미덥지 않으면 roadname_guess_on 을 false 로 끄면 된다.
+    "roadname_guess_on": True,
+    "roadname_guess_max_gap": 5,
 
     "buttons": [
         {"label": "교차로",        "hotkey": "ctrl+alt+1", "group": "A", "steps": make_group_a("교차로")},
@@ -470,7 +477,7 @@ def convert_roadname():
             return
 
         set_status("도로명 조회 중…")
-        rn = road_addr.lookup_roadname(
+        rn, note = road_addr.lookup_roadname(
             jibun,
             region=CONFIG.get("roadname_region", ""),
             api_key=api_key,
@@ -478,21 +485,28 @@ def convert_roadname():
             timeout=float(CONFIG.get("roadname_timeout", 4.0)),
             use_cache=bool(CONFIG.get("roadname_cache", True)),
             log=log,
+            guess=bool(CONFIG.get("roadname_guess_on", True)),
+            max_gap=int(CONFIG.get("roadname_guess_max_gap", 5)),
         )
         if not rn:
             log(f"[도로명] '{jibun}' → 확실한 도로명 없음, 지번주소 그대로 둠")
             set_status("도로명 못 찾음 — 지번주소 유지")
             return
 
+        # 읍/면/동은 그대로 두고 리·번지 자리만 도로명으로 바꾼다
+        value = road_addr.compose(jibun, rn)
+
         # Ctrl+C 후에도 칸의 블럭 선택은 유지되므로 Ctrl+V 가 그대로 덮어쓴다
-        pyperclip.copy(rn)
+        pyperclip.copy(value)
         time.sleep(0.05)
         if modifiers_down():
             wait_modifiers_released()
         keyboard.send("ctrl+v")
         time.sleep(CONFIG.get("paste_delay", 0.20))
-        log(f"[도로명] '{jibun}' → '{rn}' 입력")
-        set_status(f"도로명: {rn}")
+        # 추정으로 넣은 건은 나중에 되짚어 볼 수 있어야 한다 — 과태료 처분이라
+        # 틀렸을 때 확인 경로가 필요하다.
+        log(f"[도로명] '{jibun}' → '{value}' 입력 ({note})")
+        set_status(("도로명(추정): " if note.startswith("추정") else "도로명: ") + value)
 
     except Exception as e:
         log(f"[도로명] 오류(무시하고 계속): {e}")

@@ -140,6 +140,46 @@ def matches_query(juso, dong, sgg):
     return True
 
 
+# 읍·면·동 은 남기고, 리(里)와 번지는 도로명으로 갈아 끼운다.
+#   '물금읍 물금리 82'  →  '물금읍' + '물금중앙길'
+_ADMIN_SUFFIX = ("읍", "면", "동")
+_BONBUN = re.compile(r"(\d+)")
+
+
+def admin_prefix(jibun):
+    """앞에서부터 마지막 읍/면/동 토큰까지를 그대로 돌려준다. 없으면 빈 문자열."""
+    toks = (jibun or "").split()
+    last = -1
+    for i, t in enumerate(toks):
+        if any(t.endswith(s) for s in _ADMIN_SUFFIX):
+            last = i
+    return " ".join(toks[:last + 1]) if last >= 0 else ""
+
+
+def compose(jibun, rn):
+    """칸에 실제로 넣을 값을 만든다. '물금읍' + '물금중앙길' → '물금읍 물금중앙길'"""
+    if not rn:
+        return ""
+    head = admin_prefix(jibun)
+    return f"{head} {rn}" if head else rn
+
+
+def _bonbun(text):
+    """'82-3' 또는 '산 82-3' 에서 본번 82 를 뽑는다. 없으면 None."""
+    toks = (text or "").split()
+    for t in reversed(toks):
+        m = _BONBUN.search(t)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def is_mountain(jibun):
+    """'산 82-3' 처럼 산 지번인지. 산과 일반은 번호 체계가 달라 섞으면 안 된다."""
+    return any(t == "산" or t.startswith("산") and t[1:2].isdigit()
+               for t in (jibun or "").split())
+
+
 def looks_like_roadname(text):
     """
     이미 도로명으로 바뀐 칸인지 본다.
@@ -213,75 +253,157 @@ def search(keyword, api_key, api_url=DEFAULT_API_URL, timeout=4.0, count=5):
     return (results.get("juso") or []), ""
 
 
+def _single_roadname(rows):
+    """후보들의 도로명이 하나로 모이면 그것을, 갈리면 빈 값을 돌려준다."""
+    names = []
+    for j in rows:
+        rn = (j.get("rn") or "").strip()
+        if rn and rn not in names:
+            names.append(rn)
+    return names[0] if len(names) == 1 else "", names
+
+
+def _guess_by_nearest_lot(jibun, region, dong, sgg, api_key, api_url,
+                          timeout, max_gap, log):
+    """
+    도로명주소가 없는 지번(나대지·공터)을 위한 추정.
+
+    도로명주소는 건물에 부여되므로 빈 땅에는 아예 없다. 대신 같은 리/동 안에서
+    번지가 가장 가까운 건물의 도로명을 빌려 온다 — 보통 같은 길에 접해 있다.
+    다만 지번 번호가 늘 지리적으로 이어지지는 않으므로 이것은 추정이며,
+    번지 차이가 max_gap 을 넘으면 포기한다.
+    """
+    target = _bonbun(jibun)
+    if target is None:
+        return "", ""
+
+    # 번지를 뺀 '지역 + 읍면동 + 리' 로 다시 찾는다
+    head = " ".join(t for t in jibun.split() if not any(c.isdigit() for c in t))
+    keyword = clean_keyword(f"{region} {head}")
+    if not head:
+        return "", ""
+
+    try:
+        juso, err = search(keyword, api_key, api_url, timeout, count=100)
+    except Exception as e:
+        log(f"[도로명] 추정 조회 실패({type(e).__name__}): {e}")
+        return "", ""
+    if err or not juso:
+        return "", ""
+
+    mt = is_mountain(jibun)
+    best, best_gap = [], None
+    for j in juso:
+        if not matches_query(j, dong, sgg):
+            continue
+        # 산 지번과 일반 지번은 번호 체계가 달라 섞어 비교하면 안 된다
+        if ((j.get("mtYn") or "0") == "1") != mt:
+            continue
+        try:
+            num = int(j.get("lnbrMnnm"))
+        except (TypeError, ValueError):
+            continue
+        gap = abs(num - target)
+        if best_gap is None or gap < best_gap:
+            best, best_gap = [j], gap
+        elif gap == best_gap:
+            best.append(j)
+
+    if best_gap is None:
+        return "", ""
+    if best_gap > max_gap:
+        log(f"[도로명] 가장 가까운 건물이 {best_gap}번지 떨어져 있어 "
+            f"추정하지 않습니다 (허용 {max_gap}) → 지번주소 유지")
+        return "", ""
+
+    rn, names = _single_roadname(best)
+    if not rn:
+        log(f"[도로명] 추정 후보가 갈림 {names} → 지번주소 유지")
+        return "", ""
+
+    near = best[0]
+    ref = f"{near.get('liNm') or near.get('emdNm') or ''} {near.get('lnbrMnnm')}".strip()
+    return rn, f"추정: {ref} 건물 기준, 번지차 {best_gap}"
+
+
 def lookup_roadname(jibun, region="", api_key="", api_url=DEFAULT_API_URL,
-                    timeout=4.0, use_cache=True, log=print):
+                    timeout=4.0, use_cache=True, log=print,
+                    guess=True, max_gap=5):
     """
     지번주소에서 도로명만 뽑는다. 확실하지 않으면 "" 를 돌려준다.
+    반환: (도로명, 근거설명)   — 실패하면 ("", "")
 
     후보가 여러 개 나와도 도로명(rn)이 전부 같으면 채택한다.
     같은 길의 다른 건물번호일 뿐이므로 안전하다.
     도로명이 서로 갈리면 어느 길인지 단정할 수 없으므로 "" 를 돌려준다.
+
+    정확히 못 찾았고 guess 가 켜져 있으면, 같은 동네에서 번지가 가장 가까운
+    건물의 도로명을 추정해 쓴다. 이때 근거설명에 '추정' 이라고 남긴다.
     """
     jibun = clean_keyword(jibun)
     if not jibun:
-        return ""
+        return "", ""
     if not api_key:
         log("[도로명] 승인키가 없습니다")
-        return ""
+        return "", ""
 
     keyword = clean_keyword(f"{region} {jibun}")
+    dong = _pick_token(jibun, ("동", "리", "면", "읍", "가"))
+    sgg = _pick_token(region, ("시", "군", "구"))
 
     if use_cache:
         _load_cache()
         hit = _mem_cache.get(keyword)
         if hit:
             log(f"[도로명] 캐시: '{keyword}' → '{hit}'")
-            return hit
+            return hit, "캐시"
+
+    def _guess(reason):
+        if not guess:
+            return "", ""
+        log(f"[도로명] {reason} → 가까운 번지로 추정을 시도합니다")
+        rn, note = _guess_by_nearest_lot(jibun, region, dong, sgg, api_key,
+                                         api_url, timeout, max_gap, log)
+        if rn:
+            log(f"[도로명] '{keyword}' → '{rn}' ({note})")
+            if use_cache:
+                _mem_cache[keyword] = rn
+                _save_cache()
+        return rn, note
 
     try:
         juso, err = search(keyword, api_key, api_url, timeout)
     except Exception as e:
         log(f"[도로명] 조회 실패({type(e).__name__}): {e}")
-        return ""
+        return "", ""
 
     if err:
         log(f"[도로명] API 오류: {err}")
-        return ""
+        return "", ""
     if not juso:
-        log(f"[도로명] 검색 결과 없음: '{keyword}'")
-        return ""
+        return _guess(f"'{keyword}' 검색 결과 없음")
 
     # 물어본 동네가 맞는 결과만 남긴다
-    dong = _pick_token(jibun, ("동", "리", "면", "읍", "가"))
-    sgg = _pick_token(region, ("시", "군", "구"))
     kept = [j for j in juso if matches_query(j, dong, sgg)]
     if not kept:
         got = juso[0]
-        log(f"[도로명] 다른 동네가 왔습니다 "
-            f"(찾는 곳: {sgg} {dong} / 받은 곳: {got.get('sggNm','')} "
-            f"{got.get('emdNm','')}) → 지번주소 유지")
-        return ""
+        return _guess(f"다른 동네가 왔습니다 (찾는 곳: {sgg} {dong} / "
+                      f"받은 곳: {got.get('sggNm','')} {got.get('emdNm','')})")
 
-    names = []
-    for j in kept:
-        rn = (j.get("rn") or "").strip()
-        if rn and rn not in names:
-            names.append(rn)
-
+    rn, names = _single_roadname(kept)
     if not names:
-        log(f"[도로명] 결과에 도로명이 없음: '{keyword}'")
-        return ""
-    if len(names) > 1:
+        return _guess("결과에 도로명이 없음")
+    if not rn:
         # 붙은 길이 여러 개다. 사람이 봐야 하므로 원본을 그대로 둔다.
         log(f"[도로명] 후보가 갈림 {names} → 지번주소 유지")
-        return ""
+        return "", ""
 
-    rn = names[0]
-    log(f"[도로명] '{keyword}' → '{rn}' ({len(kept)}/{len(juso)}건)")
+    note = f"정확, {len(kept)}/{len(juso)}건"
+    log(f"[도로명] '{keyword}' → '{rn}' ({note})")
     if use_cache:
         _mem_cache[keyword] = rn
         _save_cache()
-    return rn
+    return rn, note
 
 
 # ────────────────────────────────────────────────
@@ -376,8 +498,15 @@ def main(argv):
             print("     본인 승인키를 발급받아야 됩니다.")
 
     print("-" * 55)
-    rn = lookup_roadname(jibun, region, key, api_url, use_cache=False)
-    print(f"최종 입력값 : '{rn}'" if rn else "최종 입력값 : (없음 → 지번주소 그대로 둠)")
+    rn, note = lookup_roadname(jibun, region, key, api_url, use_cache=False)
+    if rn:
+        print(f"앞부분 유지 : '{admin_prefix(jibun)}'")
+        print(f"도로명      : '{rn}'  ({note})")
+        print(f"최종 입력값 : '{compose(jibun, rn)}'")
+        if note.startswith("추정"):
+            print("  ※ 추정값입니다. 지도에서 한 번 확인해 보세요.")
+    else:
+        print("최종 입력값 : (없음 → 지번주소 그대로 둠)")
     print("=" * 55)
 
 
