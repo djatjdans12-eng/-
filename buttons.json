@@ -34,8 +34,8 @@
   "roadname_region": "경남 양산시",
   "roadname_timeout": 4.0,
   "roadname_cache": true,
-  "roadname_guess_on": true,
-  "roadname_guess_max_gap": 5,
+  "roadname_use_coords": true,
+  "kakao_api_key": "",
   "buttons": [
     {
       "label": "교차로",

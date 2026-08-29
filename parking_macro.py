@@ -71,6 +71,12 @@ except Exception as _e:
     road_addr = None
     print(f"[안내] road_addr.py 를 불러오지 못했습니다 ({_e}) — 도로명 변환 없이 실행합니다")
 
+try:
+    import win_text
+except Exception as _e:
+    win_text = None
+    print(f"[안내] win_text.py 를 불러오지 못했습니다 ({_e}) — 좌표 읽기 없이 실행합니다")
+
 
 # ────────────────────────────────────────────────
 # 경로 / 로그
@@ -199,13 +205,16 @@ DEFAULT_CONFIG = {
     "roadname_region": "경남 양산시",   # 지번주소 앞에 붙여서 검색할 지역
     "roadname_timeout": 4.0,
     "roadname_cache": True,
+
+    #   ── 좌표로 도로명 찾기 (주 경로) ──
     #   도로명주소는 '건물'에 부여된다. 나대지·공터처럼 건물이 없는 지번에는
-    #   도로명주소가 아예 없어서, 그런 곳은 같은 동네에서 번지가 가장 가까운
-    #   건물의 도로명을 빌려 쓴다(추정). 번지 차이가 아래 값을 넘으면 포기하고
-    #   지번주소를 그대로 둔다. 추정으로 들어간 건은 로그에 '추정' 으로 남는다.
-    #   미덥지 않으면 roadname_guess_on 을 false 로 끄면 된다.
-    "roadname_guess_on": True,
-    "roadname_guess_max_gap": 5,
+    #   아예 없어서 지번 검색만으로는 거의 안 잡힌다. 대신 민원내용에 들어 있는
+    #   '발생지역 위도:… 경도:…' 를 화면에서 읽어, 차가 실제로 서 있던 지점의
+    #   도로명을 카카오 역지오코딩으로 가져온다.
+    #   카카오 REST 키는 developers.kakao.com 에서 즉시 발급(IP 등록 불필요).
+    #   키는 '카카오키.txt' 에 넣기를 권한다 (buttons.json 은 덮어쓰므로).
+    "roadname_use_coords": True,
+    "kakao_api_key": "",
 
     "buttons": [
         {"label": "교차로",        "hotkey": "ctrl+alt+1", "group": "A", "steps": make_group_a("교차로")},
@@ -454,13 +463,26 @@ def convert_roadname():
     if road_addr is None or not CONFIG.get("roadname_on", True):
         return
 
-    api_key, key_from = road_addr.load_api_key(
-        CONFIG.get("roadname_api_key", ""), log=log)
-    if not api_key:
+    juso_key, _ = road_addr.load_api_key(CONFIG.get("roadname_api_key", ""), log=log)
+    kakao_key, _ = road_addr.load_kakao_key(CONFIG.get("kakao_api_key", ""), log=log)
+    if not juso_key and not kakao_key:
         # 어디를 찾아봤는지 남긴다. 키가 지워진 걸 모르고 쓰는 상황을 막기 위해서다.
-        for line in road_addr.key_search_hint().splitlines():
+        for line in road_addr.kakao_key_hint().splitlines():
             log("[도로명] " + line)
         return
+
+    timeout = float(CONFIG.get("roadname_timeout", 4.0))
+    use_cache = bool(CONFIG.get("roadname_cache", True))
+
+    # 좌표는 칸을 건드리기 전에 읽어 둔다. Ctrl+C 로 포커스가 흔들리기 전에
+    # 화면 상태 그대로 긁어오는 편이 안전하다.
+    coord = None
+    if (win_text is not None and kakao_key
+            and CONFIG.get("roadname_use_coords", True)):
+        try:
+            coord = win_text.find_coords(log=log)
+        except Exception as e:
+            log(f"[도로명] 좌표 읽기 실패: {e}")
 
     try:
         old_clip = pyperclip.paste()
@@ -477,17 +499,30 @@ def convert_roadname():
             return
 
         set_status("도로명 조회 중…")
-        rn, note = road_addr.lookup_roadname(
-            jibun,
-            region=CONFIG.get("roadname_region", ""),
-            api_key=api_key,
-            api_url=CONFIG.get("roadname_api_url", road_addr.DEFAULT_API_URL),
-            timeout=float(CONFIG.get("roadname_timeout", 4.0)),
-            use_cache=bool(CONFIG.get("roadname_cache", True)),
-            log=log,
-            guess=bool(CONFIG.get("roadname_guess_on", True)),
-            max_gap=int(CONFIG.get("roadname_guess_max_gap", 5)),
-        )
+
+        # ① 좌표가 주 경로다. 차가 실제로 서 있던 지점이라 건물이 없는
+        #    나대지·공터에서도 도로명이 나온다.
+        rn, note = "", ""
+        if coord:
+            rn, note = road_addr.reverse_roadname(
+                coord[0], coord[1], kakao_key,
+                timeout=timeout, use_cache=use_cache, log=log)
+        else:
+            log("[도로명] 화면에서 좌표를 찾지 못했습니다 — 지번으로 찾아봅니다")
+
+        # ② 좌표가 없거나 그 지점에 도로명주소가 없으면 지번으로 찾아본다.
+        #    (건물이 있는 지번이면 이쪽으로도 답이 나온다)
+        if not rn and juso_key:
+            rn, note = road_addr.lookup_roadname(
+                jibun,
+                region=CONFIG.get("roadname_region", ""),
+                api_key=juso_key,
+                api_url=CONFIG.get("roadname_api_url", road_addr.DEFAULT_API_URL),
+                timeout=timeout,
+                use_cache=use_cache,
+                log=log,
+            )
+
         if not rn:
             log(f"[도로명] '{jibun}' → 확실한 도로명 없음, 지번주소 그대로 둠")
             set_status("도로명 못 찾음 — 지번주소 유지")
@@ -503,10 +538,10 @@ def convert_roadname():
             wait_modifiers_released()
         keyboard.send("ctrl+v")
         time.sleep(CONFIG.get("paste_delay", 0.20))
-        # 추정으로 넣은 건은 나중에 되짚어 볼 수 있어야 한다 — 과태료 처분이라
-        # 틀렸을 때 확인 경로가 필요하다.
+        # 어느 경로로 얻은 값인지 남긴다 — 과태료 처분이라 나중에 되짚어
+        # 볼 수 있어야 한다.
         log(f"[도로명] '{jibun}' → '{value}' 입력 ({note})")
-        set_status(("도로명(추정): " if note.startswith("추정") else "도로명: ") + value)
+        set_status(f"도로명: {value}")
 
     except Exception as e:
         log(f"[도로명] 오류(무시하고 계속): {e}")

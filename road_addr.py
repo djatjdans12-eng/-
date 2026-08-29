@@ -29,9 +29,15 @@ apiSampleJSONController.java / apiSampleJSON.jsp 에서 확인한 것을 그대�
     부르는 쪽에서 원래 지번주소를 그대로 두게 한다.
     과태료 처분이라 엉뚱한 주소가 들어가면 실제 피해가 생기기 때문이다.
 
+좌표로 찾기 (주 경로)
+    도로명주소는 '건물'에 부여되므로 나대지·공터에는 아예 없다. 신고 대상은
+    대부분 그런 곳이라 지번 검색만으로는 거의 안 잡힌다. 대신 민원내용에 들어
+    있는 좌표를 쓰면, 차가 실제로 서 있던 지점의 도로명이 그대로 나온다.
+    카카오 역지오코딩(coord2address)의 road_name 이 도로명만 따로 준다.
+
 단독 테스트 (매크로 안 건드리고 API 만 확인)
+    python road_addr.py --coord 35.357891 129.047210
     python road_addr.py "유산동 159-71"
-    python road_addr.py --key TESTJUSOGOKR --region "경남 양산시" "유산동 159-71"
 """
 
 import json
@@ -55,6 +61,7 @@ _JIBUN_NUM = re.compile(r"\d+\s*-\s*\d+")
 
 _CACHE_NAME = "도로명캐시.json"
 _KEY_NAME = "승인키.txt"
+_KAKAO_KEY_NAME = "카카오키.txt"
 _mem_cache = {}
 _cache_loaded = False
 
@@ -63,47 +70,132 @@ def _base_dir():
     return os.path.dirname(os.path.abspath(sys.argv[0])) or os.getcwd()
 
 
-def load_api_key(cfg_key="", log=None):
+def load_api_key(cfg_key="", log=None, filename=_KEY_NAME, env_name="JUSO_API_KEY"):
     """
-    승인키를 찾는다. 앞에서 찾으면 뒤는 안 본다.
+    키를 찾는다. 앞에서 찾으면 뒤는 안 본다.
 
-      1) buttons.json 의 roadname_api_key   (넘겨받은 cfg_key)
-      2) 스크립트 폴더의 승인키.txt
-      3) 환경변수 JUSO_API_KEY
+      1) buttons.json 의 설정값   (넘겨받은 cfg_key)
+      2) 스크립트 폴더의 키 파일   (승인키.txt / 카카오키.txt)
+      3) 환경변수
 
-    승인키.txt 를 두는 쪽을 권한다. buttons.json 은 버튼 단계가 바뀔 때마다
+    키 파일을 두는 쪽을 권한다. buttons.json 은 버튼 단계가 바뀔 때마다
     새로 받아 덮어쓰는 파일이라, 거기 적어 두면 갱신할 때마다 키가 지워진다.
     (키가 없으면 조용히 건너뛰도록 되어 있어서 멈춘 걸 알아채기도 어렵다)
     """
     if (cfg_key or "").strip():
         return cfg_key.strip(), "buttons.json"
 
-    path = os.path.join(_base_dir(), _KEY_NAME)
+    path = os.path.join(_base_dir(), filename)
     try:
         with open(path, encoding="utf-8-sig") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    return line, _KEY_NAME
+                    return line, filename
     except FileNotFoundError:
         pass
     except Exception as e:
         if log:
-            log(f"[도로명] {_KEY_NAME} 읽기 실패: {e}")
+            log(f"[도로명] {filename} 읽기 실패: {e}")
 
-    env = (os.environ.get("JUSO_API_KEY") or "").strip()
+    env = (os.environ.get(env_name) or "").strip()
     if env:
-        return env, "환경변수 JUSO_API_KEY"
+        return env, f"환경변수 {env_name}"
 
     return "", ""
 
 
-def key_search_hint():
+def load_kakao_key(cfg_key="", log=None):
+    """카카오 REST API 키 (역지오코딩용). 승인키와 별개다."""
+    return load_api_key(cfg_key, log,
+                        filename=_KAKAO_KEY_NAME, env_name="KAKAO_REST_KEY")
+
+
+def key_search_hint(filename=_KEY_NAME, cfg_name="roadname_api_key",
+                    env_name="JUSO_API_KEY"):
     """키를 못 찾았을 때 어디를 봤는지 알려 주는 문구."""
-    return (f"승인키를 찾지 못했습니다. 다음 중 한 곳에 넣어 주세요:\n"
-            f"  1) {os.path.join(_base_dir(), _KEY_NAME)}  ← 여기가 편합니다\n"
-            f"  2) buttons.json 의 roadname_api_key\n"
-            f"  3) 환경변수 JUSO_API_KEY")
+    return (f"키를 찾지 못했습니다. 다음 중 한 곳에 넣어 주세요:\n"
+            f"  1) {os.path.join(_base_dir(), filename)}  ← 여기가 편합니다\n"
+            f"  2) buttons.json 의 {cfg_name}\n"
+            f"  3) 환경변수 {env_name}")
+
+
+def kakao_key_hint():
+    return key_search_hint(_KAKAO_KEY_NAME, "kakao_api_key", "KAKAO_REST_KEY")
+
+
+# ════════════════════════════════════════════════
+# 좌표 → 도로명 (카카오 역지오코딩)
+# ════════════════════════════════════════════════
+KAKAO_COORD2ADDR = "https://dapi.kakao.com/v2/local/geo/coord2address.json"
+
+
+def reverse_roadname(lat, lon, kakao_key, timeout=4.0, use_cache=True, log=print):
+    """
+    좌표가 놓인 지점의 도로명을 돌려준다. 반환: (도로명, 근거)
+
+    지번은 '그 땅'을, 좌표는 '차가 실제로 서 있던 지점'을 가리킨다.
+    도로 위 좌표를 거꾸로 주소로 바꾸면 그 도로의 이름이 그대로 나오므로,
+    건물이 없어 도로명주소가 부여되지 않은 나대지·공터에서도 답이 나온다.
+
+    외곽이라 도로명주소 자체가 없으면 ("", "") → 부르는 쪽이 지번을 유지한다.
+    """
+    if not kakao_key:
+        log("[도로명] 카카오 키가 없습니다")
+        return "", ""
+
+    # 소수점 5자리면 약 1m. 같은 지점을 다시 부르지 않도록 캐시 키로 쓴다.
+    ckey = f"@{round(float(lat), 5)},{round(float(lon), 5)}"
+    if use_cache:
+        _load_cache()
+        hit = _mem_cache.get(ckey)
+        if hit:
+            log(f"[도로명] 캐시: {ckey} → '{hit}'")
+            return hit, "캐시(좌표)"
+
+    params = urllib.parse.urlencode({
+        "x": lon,               # 카카오는 x=경도, y=위도
+        "y": lat,
+        "input_coord": "WGS84",
+    })
+    req = urllib.request.Request(
+        KAKAO_COORD2ADDR + "?" + params,
+        headers={"Authorization": f"KakaoAK {kakao_key}",
+                 "User-Agent": "parking-macro"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as e:
+        detail = ""
+        body = getattr(e, "read", None)
+        if body:
+            try:
+                detail = " " + body().decode("utf-8", "replace")[:200]
+            except Exception:
+                pass
+        log(f"[도로명] 좌표 조회 실패({type(e).__name__}): {e}{detail}")
+        return "", ""
+
+    docs = data.get("documents") or []
+    if not docs:
+        log(f"[도로명] 좌표에 해당하는 주소 없음: {ckey}")
+        return "", ""
+
+    road = docs[0].get("road_address") or {}
+    rn = (road.get("road_name") or "").strip()
+    if not rn:
+        jibun = (docs[0].get("address") or {}).get("address_name", "")
+        log(f"[도로명] 이 지점에는 도로명주소가 없습니다 ({jibun}) → 지번주소 유지")
+        return "", ""
+
+    note = f"좌표 {round(float(lat), 6)},{round(float(lon), 6)}"
+    log(f"[도로명] {ckey} → '{rn}' ({road.get('address_name','')})")
+    if use_cache:
+        _mem_cache[ckey] = rn
+        _save_cache()
+    return rn, note
 
 
 def clean_keyword(text):
@@ -263,72 +355,8 @@ def _single_roadname(rows):
     return names[0] if len(names) == 1 else "", names
 
 
-def _guess_by_nearest_lot(jibun, region, dong, sgg, api_key, api_url,
-                          timeout, max_gap, log):
-    """
-    도로명주소가 없는 지번(나대지·공터)을 위한 추정.
-
-    도로명주소는 건물에 부여되므로 빈 땅에는 아예 없다. 대신 같은 리/동 안에서
-    번지가 가장 가까운 건물의 도로명을 빌려 온다 — 보통 같은 길에 접해 있다.
-    다만 지번 번호가 늘 지리적으로 이어지지는 않으므로 이것은 추정이며,
-    번지 차이가 max_gap 을 넘으면 포기한다.
-    """
-    target = _bonbun(jibun)
-    if target is None:
-        return "", ""
-
-    # 번지를 뺀 '지역 + 읍면동 + 리' 로 다시 찾는다
-    head = " ".join(t for t in jibun.split() if not any(c.isdigit() for c in t))
-    keyword = clean_keyword(f"{region} {head}")
-    if not head:
-        return "", ""
-
-    try:
-        juso, err = search(keyword, api_key, api_url, timeout, count=100)
-    except Exception as e:
-        log(f"[도로명] 추정 조회 실패({type(e).__name__}): {e}")
-        return "", ""
-    if err or not juso:
-        return "", ""
-
-    mt = is_mountain(jibun)
-    best, best_gap = [], None
-    for j in juso:
-        if not matches_query(j, dong, sgg):
-            continue
-        # 산 지번과 일반 지번은 번호 체계가 달라 섞어 비교하면 안 된다
-        if ((j.get("mtYn") or "0") == "1") != mt:
-            continue
-        try:
-            num = int(j.get("lnbrMnnm"))
-        except (TypeError, ValueError):
-            continue
-        gap = abs(num - target)
-        if best_gap is None or gap < best_gap:
-            best, best_gap = [j], gap
-        elif gap == best_gap:
-            best.append(j)
-
-    if best_gap is None:
-        return "", ""
-    if best_gap > max_gap:
-        log(f"[도로명] 가장 가까운 건물이 {best_gap}번지 떨어져 있어 "
-            f"추정하지 않습니다 (허용 {max_gap}) → 지번주소 유지")
-        return "", ""
-
-    rn, names = _single_roadname(best)
-    if not rn:
-        log(f"[도로명] 추정 후보가 갈림 {names} → 지번주소 유지")
-        return "", ""
-
-    near = best[0]
-    ref = f"{near.get('liNm') or near.get('emdNm') or ''} {near.get('lnbrMnnm')}".strip()
-    return rn, f"추정: {ref} 건물 기준, 번지차 {best_gap}"
-
-
 def lookup_roadname(jibun, region="", api_key="", api_url=DEFAULT_API_URL,
-                    timeout=4.0, use_cache=True, log=print,
-                    guess=True, max_gap=5):
+                    timeout=4.0, use_cache=True, log=print):
     """
     지번주소에서 도로명만 뽑는다. 확실하지 않으면 "" 를 돌려준다.
     반환: (도로명, 근거설명)   — 실패하면 ("", "")
@@ -337,8 +365,9 @@ def lookup_roadname(jibun, region="", api_key="", api_url=DEFAULT_API_URL,
     같은 길의 다른 건물번호일 뿐이므로 안전하다.
     도로명이 서로 갈리면 어느 길인지 단정할 수 없으므로 "" 를 돌려준다.
 
-    정확히 못 찾았고 guess 가 켜져 있으면, 같은 동네에서 번지가 가장 가까운
-    건물의 도로명을 추정해 쓴다. 이때 근거설명에 '추정' 이라고 남긴다.
+    ※ 이건 건물이 있는 지번에서만 답이 나온다. 도로명주소는 건물에 부여되므로
+      나대지·공터에는 아예 없다. 그런 곳은 좌표를 쓰는 reverse_roadname() 이
+      맡는다 — 이쪽이 주 경로다.
     """
     jibun = clean_keyword(jibun)
     if not jibun:
@@ -358,19 +387,6 @@ def lookup_roadname(jibun, region="", api_key="", api_url=DEFAULT_API_URL,
             log(f"[도로명] 캐시: '{keyword}' → '{hit}'")
             return hit, "캐시"
 
-    def _guess(reason):
-        if not guess:
-            return "", ""
-        log(f"[도로명] {reason} → 가까운 번지로 추정을 시도합니다")
-        rn, note = _guess_by_nearest_lot(jibun, region, dong, sgg, api_key,
-                                         api_url, timeout, max_gap, log)
-        if rn:
-            log(f"[도로명] '{keyword}' → '{rn}' ({note})")
-            if use_cache:
-                _mem_cache[keyword] = rn
-                _save_cache()
-        return rn, note
-
     try:
         juso, err = search(keyword, api_key, api_url, timeout)
     except Exception as e:
@@ -381,24 +397,27 @@ def lookup_roadname(jibun, region="", api_key="", api_url=DEFAULT_API_URL,
         log(f"[도로명] API 오류: {err}")
         return "", ""
     if not juso:
-        return _guess(f"'{keyword}' 검색 결과 없음")
+        log(f"[도로명] 검색 결과 없음: '{keyword}' → 지번주소 유지")
+        return "", ""
 
     # 물어본 동네가 맞는 결과만 남긴다
     kept = [j for j in juso if matches_query(j, dong, sgg)]
     if not kept:
         got = juso[0]
-        return _guess(f"다른 동네가 왔습니다 (찾는 곳: {sgg} {dong} / "
-                      f"받은 곳: {got.get('sggNm','')} {got.get('emdNm','')})")
+        log(f"[도로명] 다른 동네가 왔습니다 (찾는 곳: {sgg} {dong} / "
+            f"받은 곳: {got.get('sggNm','')} {got.get('emdNm','')}) → 지번주소 유지")
+        return "", ""
 
     rn, names = _single_roadname(kept)
     if not names:
-        return _guess("결과에 도로명이 없음")
+        log(f"[도로명] 결과에 도로명이 없음: '{keyword}' → 지번주소 유지")
+        return "", ""
     if not rn:
         # 붙은 길이 여러 개다. 사람이 봐야 하므로 원본을 그대로 둔다.
         log(f"[도로명] 후보가 갈림 {names} → 지번주소 유지")
         return "", ""
 
-    note = f"정확, {len(kept)}/{len(juso)}건"
+    note = f"지번검색, {len(kept)}/{len(juso)}건"
     log(f"[도로명] '{keyword}' → '{rn}' ({note})")
     if use_cache:
         _mem_cache[keyword] = rn
@@ -416,15 +435,43 @@ def _load_config():
             cfg = json.load(f)
         return (cfg.get("roadname_api_key", ""),
                 cfg.get("roadname_region", ""),
-                cfg.get("roadname_api_url", DEFAULT_API_URL))
+                cfg.get("roadname_api_url", DEFAULT_API_URL),
+                cfg.get("kakao_api_key", ""))
     except Exception:
-        return "", "", DEFAULT_API_URL
+        return "", "", DEFAULT_API_URL, ""
+
+
+def _coord_test(lat, lon, kakao_key):
+    """좌표 하나로 카카오 역지오코딩만 확인한다."""
+    print("=" * 55)
+    print(f"좌표     : 위도 {lat}  경도 {lon}")
+    if not kakao_key:
+        print()
+        print("[안내] " + kakao_key_hint())
+        print()
+        print("  카카오 REST 키 받는 법:")
+        print("    developers.kakao.com → 로그인 → 내 애플리케이션 → 애플리케이션 추가")
+        print("    → 앱 설정/앱 키 → 'REST API 키' 복사")
+        print(f"    → 메모장에 그 키만 한 줄 붙여넣고 '{_KAKAO_KEY_NAME}' 로 저장")
+        return
+    print(f"카카오키 : {kakao_key[:8]}…")
+    print("-" * 55)
+    rn, note = reverse_roadname(lat, lon, kakao_key, use_cache=False)
+    print("-" * 55)
+    if rn:
+        print(f"도로명      : '{rn}'  ({note})")
+        print(f"최종 입력값 : '<읍/면/동> {rn}' 형태로 들어갑니다")
+    else:
+        print("도로명 : (없음 → 지번주소 그대로 둠)")
+    print("=" * 55)
 
 
 def main(argv):
-    cfg_key, region, api_url = _load_config()
+    cfg_key, region, api_url, cfg_kakao = _load_config()
     key, key_from = load_api_key(cfg_key)
+    kakao_key, _ = load_kakao_key(cfg_kakao)
 
+    coord = None
     args = []
     i = 0
     while i < len(argv):
@@ -433,6 +480,12 @@ def main(argv):
             key = argv[i + 1]
             key_from = "--key"
             i += 2
+        elif a == "--kakao" and i + 1 < len(argv):
+            kakao_key = argv[i + 1]
+            i += 2
+        elif a == "--coord" and i + 2 < len(argv):
+            coord = (float(argv[i + 1]), float(argv[i + 2]))
+            i += 3
         elif a == "--region" and i + 1 < len(argv):
             region = argv[i + 1]
             i += 2
@@ -443,9 +496,15 @@ def main(argv):
             args.append(a)
             i += 1
 
+    if coord:
+        _coord_test(coord[0], coord[1], kakao_key)
+        return
+
     if not args:
         print(__doc__)
-        print("사용법: python road_addr.py [--key 승인키] [--region \"경남 양산시\"] \"유산동 159-71\"")
+        print("사용법:")
+        print('  python road_addr.py "유산동 159-71"                    (지번으로 검색)')
+        print('  python road_addr.py --coord 35.357891 129.047210      (좌표로 검색)')
         return
 
     if not key:
