@@ -213,6 +213,11 @@ def reverse_roadname(lat, lon, kakao_key, timeout=4.0, use_cache=True, log=print
             except Exception:
                 pass
         why = _describe_url_error(e)
+        if "401" in str(e) or "appKey" in detail:
+            # 서버가 답을 준 것이므로 망은 멀쩡하다. 키만 틀렸다.
+            why = ("카카오가 키를 거부했습니다 (401). 'REST API 키' 가 맞는지 "
+                   "확인하세요 — 영문·숫자 32자리입니다. 액세스 토큰이나 "
+                   "JavaScript 키를 넣으면 이 오류가 납니다")
         # '실패' 와 '도로명이 없는 곳' 은 전혀 다른 이야기다. 뭉뚱그리면
         # 연결 문제를 두고 "좌표로도 못 찾는구나" 로 오해하게 된다.
         log(f"[도로명] 좌표 조회 실패({type(e).__name__}): {why}{detail}")
@@ -495,7 +500,11 @@ def _coord_test(lat, lon, kakao_key):
         print("    → 앱 설정/앱 키 → 'REST API 키' 복사")
         print(f"    → 메모장에 그 키만 한 줄 붙여넣고 '{_KAKAO_KEY_NAME}' 로 저장")
         return
-    print(f"카카오키 : {kakao_key[:8]}…")
+    # REST API 키는 영문·숫자 32자리다. 액세스 토큰(60자 넘고 _ - 섞임)을
+    # 잘못 넣는 일이 잦아서 부르기 전에 미리 짚어 준다.
+    looks_ok = len(kakao_key) == 32 and kakao_key.isalnum()
+    print(f"카카오키 : {kakao_key[:8]}… ({len(kakao_key)}자)"
+          + ("" if looks_ok else "  ← REST API 키는 32자리입니다. 형식 확인 필요"))
     print("-" * 55)
     rn, note = reverse_roadname(lat, lon, kakao_key, use_cache=False)
     print("-" * 55)
