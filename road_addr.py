@@ -43,9 +43,45 @@ apiSampleJSONController.java / apiSampleJSON.jsp 에서 확인한 것을 그대�
 import json
 import os
 import re
+import ssl
 import sys
 import urllib.parse
 import urllib.request
+
+_ssl_ctx = None
+
+
+def ssl_context():
+    """
+    HTTPS 검증용 컨텍스트.
+
+    Python 3.13 부터 인증서 검사에 VERIFY_X509_STRICT 가 기본으로 켜졌는데,
+    사무실·관공서 망이 SSL 을 중간에서 들여다보는 장비를 쓰면 그 장비가
+    발급한 인증서에 Authority Key Identifier 같은 확장이 빠져 있어
+    'CERTIFICATE_VERIFY_FAILED: Missing Authority Key Identifier' 로 막힌다.
+
+    그래서 엄격 검사만 끈다. 인증서 신뢰 사슬과 호스트 이름 확인은 그대로
+    남으므로 검증을 없애는 것이 아니다.
+    """
+    global _ssl_ctx
+    if _ssl_ctx is None:
+        ctx = ssl.create_default_context()
+        ctx.verify_flags &= ~getattr(ssl, "VERIFY_X509_STRICT", 0)
+        _ssl_ctx = ctx
+    return _ssl_ctx
+
+
+def _describe_url_error(e):
+    """SSL·연결 오류를 사람이 알아볼 수 있게 풀어 준다."""
+    s = str(e)
+    if "CERTIFICATE_VERIFY_FAILED" in s:
+        return ("인증서 검증 실패 — 사무실 망의 SSL 검사 장비 때문일 수 있습니다. "
+                f"({s[:120]})")
+    if "getaddrinfo" in s or "Name or service" in s:
+        return f"주소를 찾지 못했습니다 — 인터넷 연결을 확인하세요 ({s[:120]})"
+    if "timed out" in s.lower():
+        return f"응답 시간 초과 ({s[:120]})"
+    return s[:160]
 
 DEFAULT_API_URL = "https://business.juso.go.kr/addrlink/addrLinkApi.do"
 
@@ -165,7 +201,8 @@ def reverse_roadname(lat, lon, kakao_key, timeout=4.0, use_cache=True, log=print
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout,
+                                    context=ssl_context()) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
     except Exception as e:
         detail = ""
@@ -175,8 +212,11 @@ def reverse_roadname(lat, lon, kakao_key, timeout=4.0, use_cache=True, log=print
                 detail = " " + body().decode("utf-8", "replace")[:200]
             except Exception:
                 pass
-        log(f"[도로명] 좌표 조회 실패({type(e).__name__}): {e}{detail}")
-        return "", ""
+        why = _describe_url_error(e)
+        # '실패' 와 '도로명이 없는 곳' 은 전혀 다른 이야기다. 뭉뚱그리면
+        # 연결 문제를 두고 "좌표로도 못 찾는구나" 로 오해하게 된다.
+        log(f"[도로명] 좌표 조회 실패({type(e).__name__}): {why}{detail}")
+        return "", f"실패: {why}"
 
     docs = data.get("documents") or []
     if not docs:
@@ -333,7 +373,8 @@ def search(keyword, api_key, api_url=DEFAULT_API_URL, timeout=4.0, count=5):
         api_url + "?" + params,
         headers={"User-Agent": "Mozilla/5.0 (parking-macro)"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout,
+                                context=ssl_context()) as resp:
         raw = resp.read().decode("utf-8", "replace")
 
     data = json.loads(raw)
@@ -461,8 +502,13 @@ def _coord_test(lat, lon, kakao_key):
     if rn:
         print(f"도로명      : '{rn}'  ({note})")
         print(f"최종 입력값 : '<읍/면/동> {rn}' 형태로 들어갑니다")
+    elif note.startswith("실패"):
+        # 연결이 안 된 것과 '그 지점에 도로명이 없는 것' 은 전혀 다르다.
+        print("[조회 실패] 카카오 서버에 물어보지도 못했습니다.")
+        print(f"  {note[3:].lstrip(': ')}")
+        print("  → 도로명이 없다는 뜻이 아닙니다. 연결 문제입니다.")
     else:
-        print("도로명 : (없음 → 지번주소 그대로 둠)")
+        print("도로명 : 이 지점에는 도로명주소가 없습니다 → 지번주소 그대로 둠")
     print("=" * 55)
 
 
