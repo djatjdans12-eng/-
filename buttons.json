@@ -28,17 +28,6 @@
     -14,
     14
   ],
-  "roadname_on": true,
-  "roadname_api_key": "",
-  "roadname_api_url": "https://business.juso.go.kr/addrlink/addrLinkApi.do",
-  "roadname_region": "경남 양산시",
-  "roadname_timeout": 4.0,
-  "roadname_cache": true,
-  "roadname_use_coords": true,
-  "kakao_api_key": "",
-  "coord_click_pos": null,
-  "coord_click_delay": 0.15,
-  "roadname_use_jibun": false,
   "buttons": [
     {
       "label": "교차로",
@@ -48,15 +37,7 @@
         {
           "type": "key",
           "key": "tab",
-          "repeat": 3
-        },
-        {
-          "type": "roadname"
-        },
-        {
-          "type": "key",
-          "key": "tab",
-          "repeat": 4
+          "repeat": 7
         },
         {
           "type": "paste",
@@ -94,15 +75,7 @@
         {
           "type": "key",
           "key": "tab",
-          "repeat": 3
-        },
-        {
-          "type": "roadname"
-        },
-        {
-          "type": "key",
-          "key": "tab",
-          "repeat": 4
+          "repeat": 7
         },
         {
           "type": "paste",
@@ -140,15 +113,7 @@
         {
           "type": "key",
           "key": "tab",
-          "repeat": 3
-        },
-        {
-          "type": "roadname"
-        },
-        {
-          "type": "key",
-          "key": "tab",
-          "repeat": 4
+          "repeat": 7
         },
         {
           "type": "paste",
@@ -186,15 +151,7 @@
         {
           "type": "key",
           "key": "tab",
-          "repeat": 3
-        },
-        {
-          "type": "roadname"
-        },
-        {
-          "type": "key",
-          "key": "tab",
-          "repeat": 4
+          "repeat": 7
         },
         {
           "type": "paste",
@@ -232,15 +189,7 @@
         {
           "type": "key",
           "key": "tab",
-          "repeat": 3
-        },
-        {
-          "type": "roadname"
-        },
-        {
-          "type": "key",
-          "key": "tab",
-          "repeat": 4
+          "repeat": 7
         },
         {
           "type": "paste",
@@ -288,15 +237,7 @@
         {
           "type": "key",
           "key": "tab",
-          "repeat": 3
-        },
-        {
-          "type": "roadname"
-        },
-        {
-          "type": "key",
-          "key": "tab",
-          "repeat": 4
+          "repeat": 7
         },
         {
           "type": "paste",
@@ -471,15 +412,7 @@
         {
           "type": "key",
           "key": "tab",
-          "repeat": 3
-        },
-        {
-          "type": "roadname"
-        },
-        {
-          "type": "key",
-          "key": "tab",
-          "repeat": 4
+          "repeat": 7
         },
         {
           "type": "paste",

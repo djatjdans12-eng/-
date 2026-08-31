@@ -65,18 +65,6 @@ except Exception as _e:      # plate_ocr.py 가 없어도 나머지 기능은 �
     plate_ocr = None
     print(f"[안내] plate_ocr.py 를 불러오지 못했습니다 ({_e}) — OCR 기능 없이 실행합니다")
 
-try:
-    import road_addr
-except Exception as _e:
-    road_addr = None
-    print(f"[안내] road_addr.py 를 불러오지 못했습니다 ({_e}) — 도로명 변환 없이 실행합니다")
-
-try:
-    import win_text
-except Exception as _e:
-    win_text = None
-    print(f"[안내] win_text.py 를 불러오지 못했습니다 ({_e}) — 좌표 읽기 없이 실행합니다")
-
 
 # ────────────────────────────────────────────────
 # 경로 / 로그
@@ -106,29 +94,18 @@ def log(msg):
 DEFAULT_PRE_ENTER_WAIT = 0.35   # 시작 Enter 로 안내창을 닫은 뒤 기다리는 시간(초)
 
 
-# 위반내용 칸까지는 Tab 7번이다. 그런데 3번째에서 잡히는 칸이 '위반위치'(지번주소)라,
-# 거기서 한 번 멈춰 도로명으로 바꾼 뒤 나머지 4번을 마저 누른다.
-def tab_to_content():
-    return [
-        {"type": "key", "key": "tab", "repeat": 3},
-        {"type": "roadname"},
-        {"type": "key", "key": "tab", "repeat": 4},
-    ]
-
-
 def make_group_a(name):
-    return tab_to_content() + [
+    return [
         {"type": "paste", "key": None, "text": name},
         {"type": "key", "key": "alt+t"},
         {"type": "key", "key": "down", "repeat": 2},
         {"type": "key", "key": "alt+g"},
         {"type": "key", "key": "enter"},
-        {"type": "key", "key": "ctrl+right"},
     ]
 
 
 def make_group_b(name, down_count):
-    return tab_to_content() + [
+    return [
         {"type": "paste", "key": None, "text": name},
         {"type": "key", "key": "shift+tab", "repeat": 2},
         {"type": "key", "key": "down", "repeat": down_count},
@@ -136,7 +113,6 @@ def make_group_b(name, down_count):
         {"type": "key", "key": "down", "repeat": 2},
         {"type": "key", "key": "alt+g"},
         {"type": "key", "key": "enter"},
-        {"type": "key", "key": "ctrl+right"},
     ]
 
 
@@ -189,45 +165,6 @@ DEFAULT_CONFIG = {
     "ocr_overlay_alpha": 0.30,
     "ocr_popup_seconds": 0,     # 0 = 직접 닫을 때까지 유지
     "tesseract_path": "",       # 윈도우 내장 OCR 이 안 될 때만 경로 지정
-
-    # ── 지번주소 → 도로명 자동 변환 ──
-    #   Tab 3번째에서 잡히는 '위반위치' 칸의 지번주소를 도로명으로 바꿔 넣는다.
-    #   승인키는 https://business.juso.go.kr → 개발자센터 에서 무료로 발급받는다.
-    #   키가 없으면 이 단계는 건너뛴다 (나머지 매크로는 정상 동작).
-    #
-    #   ※ 승인키는 아래 roadname_api_key 대신 '승인키.txt' 에 넣기를 권한다.
-    #     이 buttons.json 은 버튼 단계가 바뀌면 새로 받아 덮어쓰는 파일이라,
-    #     여기 적어 두면 갱신할 때마다 키가 지워진다.
-    #     찾는 순서: roadname_api_key → 승인키.txt → 환경변수 JUSO_API_KEY
-    "roadname_on": True,
-    "roadname_api_key": "",
-    "roadname_api_url": "https://business.juso.go.kr/addrlink/addrLinkApi.do",
-    "roadname_region": "경남 양산시",   # 지번주소 앞에 붙여서 검색할 지역
-    "roadname_timeout": 4.0,
-    "roadname_cache": True,
-
-    #   ── 좌표로 도로명 찾기 (주 경로) ──
-    #   도로명주소는 '건물'에 부여된다. 나대지·공터처럼 건물이 없는 지번에는
-    #   아예 없어서 지번 검색만으로는 거의 안 잡힌다. 대신 민원내용에 들어 있는
-    #   '발생지역 위도:… 경도:…' 를 화면에서 읽어, 차가 실제로 서 있던 지점의
-    #   도로명을 카카오 역지오코딩으로 가져온다.
-    #   카카오 REST 키는 developers.kakao.com 에서 즉시 발급(IP 등록 불필요).
-    #   키는 '카카오키.txt' 에 넣기를 권한다 (buttons.json 은 덮어쓰므로).
-    "roadname_use_coords": True,
-    "kakao_api_key": "",
-    #   민원내용 칸의 클릭 위치. 매크로 창의 '민원내용 위치 지정' 으로 채운다.
-    #   이 업무 프로그램은 표준 윈도우 컨트롤이 아니라 창 안의 글자를 직접
-    #   읽어올 수 없어서(win_text.py 진단으로 확인), 그 칸을 클릭해
-    #   전체선택·복사하는 방식으로 좌표를 가져온다.
-    "coord_click_pos": None,
-    "coord_click_delay": 0.15,
-
-    #   ── 지번으로 도로명 찾기 (기본 꺼짐) ──
-    #   '물금읍 범어리 2762-1' 에 금오로가 들어갔는데 실제로는 청운로였다.
-    #   그 땅에 접한 건물의 길과 차가 실제로 서 있던 길이 다른 것인데,
-    #   지번만으로는 구분할 방법이 없다. 빈칸이면 사람이 채우지만 그럴듯한
-    #   오답은 눈에 안 띄고 그대로 저장되어 나간다. 켜려면 그 위험을 알고 켤 것.
-    "roadname_use_jibun": False,
 
     "buttons": [
         {"label": "교차로",        "hotkey": "ctrl+alt+1", "group": "A", "steps": make_group_a("교차로")},
@@ -314,26 +251,6 @@ def load_config():
         log(f"[오류] buttons.json 읽기 실패, 기본값 사용: {e}")
         CONFIG = json.loads(json.dumps(DEFAULT_CONFIG))
         apply_pre_enter(CONFIG)
-
-
-def save_config_value(key, value):
-    """
-    buttons.json 에 값 하나를 영구 저장한다.
-    (민원내용 칸의 클릭 위치처럼, 한 번 지정하면 재시작해도 남아야 하는 값)
-    """
-    CONFIG[key] = value
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-    data[key] = value
-    try:
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        log(f"[설정] {key} 저장됨: {value}")
-    except Exception as e:
-        log(f"[오류] 설정 저장 실패({key}): {e}")
 
 
 # ────────────────────────────────────────────────
@@ -453,222 +370,6 @@ def paste_text(text):
     threading.Thread(target=restore, daemon=True).start()
 
 
-_CLIP_MARK = "\x00__매크로_표식__\x00"
-
-
-def read_selected_text(timeout=0.6):
-    """
-    지금 블럭 잡혀 있는 텍스트를 Ctrl+C 로 읽어 온다.
-
-    먼저 클립보드에 표식을 넣고, 표식이 바뀔 때까지 기다린다.
-    그냥 Ctrl+C 하고 바로 읽으면 복사가 실패했을 때 '이전 클립보드 내용'을
-    주소로 착각해서 엉뚱한 값을 검색하게 된다.
-    """
-    try:
-        pyperclip.copy(_CLIP_MARK)
-    except Exception:
-        return ""
-
-    keyboard.send("ctrl+c")
-
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        time.sleep(0.03)
-        try:
-            v = pyperclip.paste()
-        except Exception:
-            continue
-        if v and v != _CLIP_MARK:
-            return v.strip()
-    return ""
-
-
-def _copy_selection(timeout=0.6):
-    """Ctrl+C 로 지금 선택된 글자를 읽는다. 표식으로 복사 성공 여부를 가린다."""
-    try:
-        pyperclip.copy(_CLIP_MARK)
-    except Exception:
-        return ""
-    keyboard.send("ctrl+c")
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        time.sleep(0.03)
-        try:
-            v = pyperclip.paste()
-        except Exception:
-            continue
-        if v and v != _CLIP_MARK:
-            return v
-    return ""
-
-
-def read_coords_by_click(expect_jibun):
-    """
-    민원내용 칸을 클릭해 전체선택·복사한 뒤 위도·경도를 뽑는다.
-
-    이 업무 프로그램은 표준 윈도우 컨트롤이 아니라 WM_GETTEXT 로는 글자가
-    안 나온다(win_text.py 진단으로 확인). 그래서 화면에 보이는 그대로
-    클릭해서 복사한다 — OCR 과 달리 글자를 그대로 가져오므로 오인식이 없다.
-
-    반환: (위도, 경도) 또는 None
-
-    ※ 다른 칸을 클릭했다가 원래 칸으로 못 돌아오면, 이어지는 붙여넣기가
-      엉뚱한 칸을 덮어쓴다. 그래서 돌아온 뒤 그 칸의 내용이 아까 읽어 둔
-      지번과 같은지 반드시 대조하고, 다르면 None 대신 예외를 던져
-      부르는 쪽이 아무것도 건드리지 않게 한다.
-    """
-    pos = CONFIG.get("coord_click_pos")
-    if not pos:
-        log("[도로명] 민원내용 위치가 지정되지 않았습니다 "
-            "— 매크로 창의 '민원내용 위치 지정' 을 먼저 누르세요")
-        return None
-
-    before = win_text.focused_control()
-    delay = float(CONFIG.get("coord_click_delay", 0.15))
-
-    win_text.click_at(int(pos["x"]), int(pos["y"]), settle=delay)
-    keyboard.send("ctrl+a")
-    time.sleep(delay)
-    text = _copy_selection()
-
-    # 원래 칸으로 복귀
-    win_text.restore_focus(before)
-    time.sleep(delay)
-    keyboard.send("home")
-    keyboard.send("shift+end")
-    time.sleep(delay)
-    back = (_copy_selection() or "").strip()
-
-    if back != (expect_jibun or "").strip():
-        raise RuntimeError(
-            f"원래 칸으로 돌아오지 못했습니다 (기대 '{expect_jibun}' / 실제 '{back}')")
-
-    coords = win_text.find_coords_in_text(text)
-    if not coords:
-        log(f"[도로명] 복사한 글자에서 좌표를 못 찾았습니다 ({len(text)}자)")
-        return None
-    log(f"[도로명] 좌표 읽음: 위도 {coords[0]}, 경도 {coords[1]}")
-    return coords
-
-
-def pick_coord_position():
-    """5초를 세는 동안 마우스를 민원내용 칸에 올려 두면 그 자리를 저장한다."""
-    if win_text is None:
-        set_status("win_text.py 를 불러오지 못했습니다")
-        return
-
-    def work():
-        for i in range(5, 0, -1):
-            set_status(f"{i}초 안에 민원내용 칸 위에 마우스를 올려 두세요…")
-            time.sleep(1)
-        x, y = win_text.get_cursor_pos()
-        save_config_value("coord_click_pos", {"x": x, "y": y})
-        set_status(f"민원내용 위치 저장됨 ({x}, {y})")
-
-    threading.Thread(target=work, daemon=True).start()
-
-
-def convert_roadname():
-    """
-    블럭 잡힌 지번주소를 도로명으로 바꿔 넣는다.
-
-    확실할 때만 덮어쓴다. 못 찾거나 후보가 갈리면 원래 지번주소를 그대로 둔다.
-    (엉뚱한 주소로 과태료가 나가면 실제 피해가 생긴다)
-
-    click_image 와 달리 실패해도 매크로를 중단하지 않는다.
-    지번주소가 그대로 남아 있을 뿐이라 이후 단계에 영향이 없기 때문이다.
-    """
-    if road_addr is None or not CONFIG.get("roadname_on", True):
-        return
-
-    juso_key, _ = road_addr.load_api_key(CONFIG.get("roadname_api_key", ""), log=log)
-    kakao_key, _ = road_addr.load_kakao_key(CONFIG.get("kakao_api_key", ""), log=log)
-    if not juso_key and not kakao_key:
-        # 어디를 찾아봤는지 남긴다. 키가 지워진 걸 모르고 쓰는 상황을 막기 위해서다.
-        for line in road_addr.kakao_key_hint().splitlines():
-            log("[도로명] " + line)
-        return
-
-    timeout = float(CONFIG.get("roadname_timeout", 4.0))
-    use_cache = bool(CONFIG.get("roadname_cache", True))
-
-    try:
-        old_clip = pyperclip.paste()
-    except Exception:
-        old_clip = ""
-
-    try:
-        jibun = read_selected_text()
-        if not jibun:
-            log("[도로명] 칸에서 주소를 읽지 못했습니다 — 원본 유지")
-            return
-        if road_addr.looks_like_roadname(jibun):
-            log(f"[도로명] 이미 도로명입니다: '{jibun}' — 건너뜀")
-            return
-
-        set_status("도로명 조회 중…")
-
-        # ① 좌표가 주 경로다. 차가 실제로 서 있던 지점이라, 건물이 없어
-        #    도로명주소가 부여되지 않은 나대지·공터에서도 도로명이 나온다.
-        #    민원내용 칸을 클릭해 전체선택·복사해서 읽는다. 못 돌아오면
-        #    read_coords_by_click 이 예외를 던지므로 아무것도 안 건드리게 된다.
-        rn, note = "", ""
-        coord = None
-        if (win_text is not None and kakao_key
-                and CONFIG.get("roadname_use_coords", True)):
-            coord = read_coords_by_click(jibun)
-
-        if coord:
-            rn, note = road_addr.reverse_roadname(
-                coord[0], coord[1], kakao_key,
-                timeout=timeout, use_cache=use_cache, log=log)
-
-        # ② 지번 검색은 기본으로 꺼 둔다.
-        #    '물금읍 범어리 2762-1' 에 금오로가 들어갔는데 실제로는 청운로였다.
-        #    그 땅에 접한 건물의 길과 차가 서 있던 길이 다른 것인데, 지번만으로는
-        #    구분할 방법이 없다. 빈칸은 사람이 채우지만 그럴듯한 오답은
-        #    그대로 저장되어 나가므로, 켜려면 그 위험을 알고 켜야 한다.
-        if not rn and juso_key and CONFIG.get("roadname_use_jibun", False):
-            rn, note = road_addr.lookup_roadname(
-                jibun,
-                region=CONFIG.get("roadname_region", ""),
-                api_key=juso_key,
-                api_url=CONFIG.get("roadname_api_url", road_addr.DEFAULT_API_URL),
-                timeout=timeout,
-                use_cache=use_cache,
-                log=log,
-            )
-
-        if not rn:
-            log(f"[도로명] '{jibun}' → 확실한 도로명 없음, 지번주소 그대로 둠")
-            set_status("도로명 못 찾음 — 지번주소 유지")
-            return
-
-        # 읍/면/동은 그대로 두고 리·번지 자리만 도로명으로 바꾼다
-        value = road_addr.compose(jibun, rn)
-
-        # Ctrl+C 후에도 칸의 블럭 선택은 유지되므로 Ctrl+V 가 그대로 덮어쓴다
-        pyperclip.copy(value)
-        time.sleep(0.05)
-        if modifiers_down():
-            wait_modifiers_released()
-        keyboard.send("ctrl+v")
-        time.sleep(CONFIG.get("paste_delay", 0.20))
-        # 어느 경로로 얻은 값인지 남긴다 — 과태료 처분이라 나중에 되짚어
-        # 볼 수 있어야 한다.
-        log(f"[도로명] '{jibun}' → '{value}' 입력 ({note})")
-        set_status(f"도로명: {value}")
-
-    except Exception as e:
-        log(f"[도로명] 오류(무시하고 계속): {e}")
-    finally:
-        # 뒤에 이어지는 paste 단계와 충돌하지 않도록 복원은 동기로 처리한다
-        try:
-            pyperclip.copy(old_clip)
-        except Exception:
-            pass
-
-
 def run_steps(label, steps):
     global busy
     with busy_lock:
@@ -700,9 +401,6 @@ def run_steps(label, steps):
 
             elif stype == "wait":
                 time.sleep(float(st.get("sec", 0.1)))
-
-            elif stype == "roadname":
-                convert_roadname()
 
             elif stype == "click_image":
                 # 화면에서 지정한 그림을 찾아 클릭한다.
@@ -917,15 +615,6 @@ def main():
             text=f"차량번호 읽기\n{CONFIG.get('ocr_hotkey', '`')} · 드래그",
             width=13, height=2,
             command=lambda: (ocr.trigger()),
-        ).grid(row=next_row, column=0, columnspan=2, sticky="ew", **pad)
-        next_row += 1
-
-    # ── 도로명 변환용 : 민원내용 칸 위치 지정 (최초 1회) ──
-    if road_addr is not None and win_text is not None and CONFIG.get("roadname_on", True):
-        tk.Button(
-            frm,
-            text="민원내용 위치 지정 (도로명 변환용, 최초 1회)",
-            command=pick_coord_position,
         ).grid(row=next_row, column=0, columnspan=2, sticky="ew", **pad)
         next_row += 1
 
