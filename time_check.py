@@ -395,12 +395,46 @@ def is_blank(img):
     return sum(g.histogram()[:128]) < 20
 
 
+def remark_variants(img):
+    """비고 칸을 다르게 잘라/키워서 다시 읽을 후보들.
+    윈도우 OCR 은 넓은 빈 칸 속 짧은 글자(예: 소방시설)를 통째로 놓치는 일이 있어
+    글자 부분만 딱 잘라 크기를 바꿔 가며 다시 시도한다."""
+    sx, sy = img.width / BASE_W, img.height / BASE_H
+    x1, y1, x2, y2 = REGIONS["remark"]
+    box = img.crop((int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)))
+    g = box.convert("L")
+    bb = g.point(lambda v: 255 if v < 128 else 0).getbbox()
+    if not bb:
+        return []
+    l, t, r, b = bb
+    tight = box.crop((max(0, l - 6), max(0, t - 4), min(box.width, r + 6), min(box.height, b + 4)))
+    out = []
+    for k in (2, 3, 4, 5):
+        c = tight.resize((tight.width * k, tight.height * k), Image.LANCZOS)
+        out.append(ImageOps.expand(c, border=30, fill=(255, 255, 255)))
+        bw = c.convert("L").point(lambda v: 0 if v < 150 else 255).convert("RGB")
+        out.append(ImageOps.expand(bw, border=30, fill=(255, 255, 255)))
+    return out
+
+
 def read_screen(engine, path):
     img = Image.open(path).convert("RGB")
     raw = {}
     for k in REGIONS:
         c = crop_region(img, k)
-        raw[k] = "" if k == "remark" and is_blank(c) else engine.read(c, k).strip()
+        if k == "remark":
+            raw["remark_blank"] = is_blank(c)
+            if raw["remark_blank"]:
+                raw[k] = ""
+                continue
+        raw[k] = engine.read(c, k).strip()
+    # 비고에 글자가 있는데 못 알아본 경우 → 다시 읽기
+    if not raw["remark_blank"] and match_remark(raw["remark"])[1] != "ok":
+        for v in remark_variants(img):
+            t = engine.read(v, "remark").strip()
+            if match_remark(t)[1] == "ok":
+                raw["remark"] = t
+                break
     return raw, (img.width, img.height)
 
 
@@ -463,6 +497,10 @@ def match_remark(text):
     c = difflib.get_close_matches(n, KNOWN_REMARKS, n=1, cutoff=0.6)
     if c:
         return c[0], "ok"
+    # 두 글자 이상 연속으로 겹치는 비고가 딱 하나면 그것으로 본다
+    hits = {r for r in KNOWN_REMARKS for i in range(len(n) - 1) if n[i:i + 2] in r}
+    if len(hits) == 1:
+        return hits.pop(), "ok"
     return n, "unknown"
 
 
@@ -486,6 +524,8 @@ def fmt_sec(s):
 # ────────────────────────────────────────────────
 def judge(raw):
     rem, rem_state = match_remark(raw["remark"])
+    if rem_state == "empty" and not raw.get("remark_blank", True):
+        rem_state = "unknown"          # 칸에 글자는 있는데 OCR 이 못 읽음
     t1, t2 = parse_stamps(raw["body"])
     computed = None
     if t1 and t2:
@@ -506,7 +546,7 @@ def judge(raw):
         row.update({"기준": "", "판정": "비고없음", "사유": "비고가 비어 있어 판정하지 않음"})
         return row
     if rem_state == "unknown":
-        row.update({"기준": "", "판정": "확인필요", "사유": f"비고를 못 읽음: '{raw['remark']}'"})
+        row.update({"기준": "", "판정": "확인필요", "사유": f"비고를 못 읽음: '{raw['remark']}' (캡처를 직접 확인)"})
         return row
 
     need = ETC5_SEC if rem == "기타5분" else NORMAL_SEC
