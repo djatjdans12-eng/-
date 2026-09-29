@@ -18,7 +18,8 @@ time_capture.py — 위반자료 상세관리 창을 한 건씩 자동 캡처하
 
 안전장치
   · F8 을 누른 순간 맨 앞에 있는 창의 제목에 '위반자료' 가 없으면 아무것도 누르지 않고 종료
-  · 캡처 도중 다른 창이 앞으로 나오면 즉시 멈춤 (엉뚱한 곳을 클릭하지 않도록)
+  · '>' 를 누르면 창이 닫히고 새 창이 열리므로 매번 '위반자료' 창을 다시 찾음
+  · 다른 창이 앞으로 나와 있으면 멈춤 (엉뚱한 곳을 클릭하지 않도록)
   · '>' 버튼 위치는 창 크기에 대한 비율로 계산 (기준 1442x1006 에서 (178, 980))
 """
 
@@ -56,6 +57,25 @@ def win_title(hwnd):
     buf = ctypes.create_unicode_buffer(256)
     user32.GetWindowTextW(hwnd, buf, 256)
     return buf.value
+
+
+WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+
+
+def find_target():
+    """제목에 '위반자료' 가 든 보이는 창 중 맨 위(Z순서 첫째) 창. 없으면 None."""
+    found = []
+
+    def cb(hwnd, _):
+        if user32.IsWindowVisible(hwnd) and TITLE_HINT in win_title(hwnd):
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(cb), None)
+    return found[0] if found else None
 
 
 def win_rect(hwnd):
@@ -124,9 +144,17 @@ def main():
         if keyboard.is_pressed("esc"):
             reason = "Esc 로 중단"
             break
-        if user32.GetForegroundWindow() != hwnd or not user32.IsWindow(hwnd):
-            reason = "다른 창이 앞으로 나와서 중단"
+        # '>' 를 누르면 창이 닫히고 새 창이 열리므로, 매번 창을 새로 찾는다
+        hwnd = find_target()
+        if hwnd is None:
+            reason = "위반자료 창을 찾지 못함 (마지막 건이거나 창이 닫힘)"
             break
+        if user32.GetForegroundWindow() != hwnd:
+            user32.SetForegroundWindow(hwnd)
+            time.sleep(0.25)
+            if user32.GetForegroundWindow() != hwnd:
+                reason = "다른 창이 앞으로 나와서 중단"
+                break
 
         img = grab_stable(hwnd)
         if prev is not None and img.tobytes() == prev.tobytes():
@@ -138,11 +166,15 @@ def main():
         print(f"  캡처 {n}", end="\r")
 
         click_next(hwnd)
-        # 화면이 바뀔 때까지 최대 4초 대기
+        # 새 창(또는 바뀐 내용)이 나타날 때까지 최대 6초 대기
         t0 = time.time()
-        while time.time() - t0 < 4:
-            time.sleep(0.15)
-            if grab(hwnd).tobytes() != prev.tobytes():
+        while time.time() - t0 < 6:
+            time.sleep(0.2)
+            nh = find_target()
+            if nh is not None and nh != hwnd:
+                time.sleep(0.4)                    # 새 창이 다 그려질 시간
+                break
+            if nh is not None and grab(nh).tobytes() != prev.tobytes():
                 break
     else:
         reason = f"최대 {a.max}건에 도달"

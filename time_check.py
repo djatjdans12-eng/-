@@ -382,6 +382,9 @@ def run(folder, engine_choice="auto"):
         try:
             raw, size = read_screen(engine, f)
             row = judge(raw)
+            if row["판정"] == "확인필요":
+                row["사유"] += " | 원문 비고=%r 간격=%r 본문=%r" % (
+                    raw["remark"][:20], raw["interval"][:20], raw["body"][:60].replace("\n", " "))
             if abs(size[0] / BASE_W - 1) > 0.02 or abs(size[1] / BASE_H - 1) > 0.02:
                 row["사유"] = (row.get("사유", "") + f"; 창 크기 {size[0]}x{size[1]} (기준 {BASE_W}x{BASE_H})").strip("; ")
         except Exception as e:
