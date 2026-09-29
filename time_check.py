@@ -28,6 +28,7 @@ import io
 import os
 import re
 import subprocess
+import tempfile
 import sys
 import time
 from datetime import datetime
@@ -159,13 +160,19 @@ class WindowsEngine:
             [ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", enc],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            startupinfo=self._si(),
         )
         line = self._readline(30)
         if not line or not line.startswith("###READY###"):
             self.close()
             raise RuntimeError(f"엔진 준비 실패: {line!r}")
         self.first_err = True
+
+    @staticmethod
+    def _si():
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        return si
 
     def _readline(self, timeout):
         box = {}
@@ -210,6 +217,53 @@ class WindowsEngine:
         except Exception:
             pass
         self.proc = None
+
+
+class PlateOcrEngine:
+    """기존 차량번호 매크로(plate_ocr.py)와 똑같은 방식: 임시 BMP 를 매번 새 이름으로 저장해 읽힌다.
+    같은 이름으로 덮어쓰면 OCR 이 앞 파일을 아직 잡고 있어 쓰기가 거부된다."""
+    name = "windows(plate_ocr)"
+
+    def __init__(self, folder=None):
+        import plate_ocr
+        self.po = plate_ocr
+        self.be = plate_ocr.OcrBackend(lang="ko", log=lambda *a: None)
+        if self.be.kind is None:
+            raise RuntimeError("윈도우 OCR 엔진 없음")
+        self.name = f"windows({self.be.kind})"
+        self.tmp = tempfile.mkdtemp(prefix="timecheck_")
+        self.n = 0
+        self.read(Image.new("RGB", (60, 30), "white"), "test")   # 시험 한 번
+
+    def read(self, img, kind):
+        self.n += 1
+        path = os.path.join(self.tmp, f"c{self.n}.bmp")
+        rgba = img.convert("RGBA")
+        b, g, r, a = rgba.split()
+        bgra = Image.merge("RGBA", (b, g, r, a)).transpose(Image.FLIP_TOP_BOTTOM).tobytes()
+        self.po.save_bmp(path, img.width, img.height, bgra)
+        text = self.be.read(path)
+        if self.n > 3:                                   # 오래된 파일은 조용히 정리
+            try:
+                os.remove(os.path.join(self.tmp, f"c{self.n - 3}.bmp"))
+            except OSError:
+                pass
+        return text
+
+    def close(self):
+        try:
+            self.be.close()
+        except Exception:
+            pass
+        for f in glob.glob(os.path.join(self.tmp, "*.bmp")):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        try:
+            os.rmdir(self.tmp)
+        except OSError:
+            pass
 
 
 class WinRtEngine:
@@ -310,7 +364,7 @@ class WinRtEngine:
 
 def make_engine(choice, folder=None):
     if choice in ("auto", "windows") and sys.platform == "win32":
-        for cls in (WinRtEngine, WindowsEngine):
+        for cls in (PlateOcrEngine, WinRtEngine, WindowsEngine):
             try:
                 return cls(folder)
             except Exception as e:
