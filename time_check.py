@@ -104,12 +104,16 @@ class WindowsEngine:
         self.be = plate_ocr.OcrBackend(lang="ko", log=lambda *a: None)
         if self.be.kind is None:
             raise RuntimeError("윈도우 OCR 엔진 없음")
-        self.tmp = tempfile.mkdtemp(prefix="timecheck_")
+        # 시스템 임시폴더는 정부 PC 에서 쓰기가 막히거나 경로 오류가 날 수 있어
+        # 스크립트가 있는 폴더 아래에 임시 폴더를 둔다
+        base = os.path.dirname(os.path.abspath(__file__))
+        self.tmp = os.path.join(base, "_ocr_tmp")
+        os.makedirs(self.tmp, exist_ok=True)
 
     def read(self, img, kind):
         path = os.path.join(self.tmp, "crop.png")
         img.save(path, "PNG")
-        return self.be.read(path)
+        return self.be.read(os.path.abspath(path))
 
     def close(self):
         try:
@@ -377,7 +381,7 @@ def run(folder, engine_choice="auto"):
         return None
     engine = make_engine(engine_choice)
     print(f"폴더: {folder}\n캡처 {len(files)}장 / OCR 엔진: {engine.name}")
-    rows, t0 = [], time.time()
+    rows, t0, errors = [], time.time(), 0
     for i, f in enumerate(files, 1):
         try:
             raw, size = read_screen(engine, f)
@@ -388,6 +392,10 @@ def run(folder, engine_choice="auto"):
             if abs(size[0] / BASE_W - 1) > 0.02 or abs(size[1] / BASE_H - 1) > 0.02:
                 row["사유"] = (row.get("사유", "") + f"; 창 크기 {size[0]}x{size[1]} (기준 {BASE_W}x{BASE_H})").strip("; ")
         except Exception as e:
+            if not errors:
+                import traceback
+                traceback.print_exc()          # 첫 실패만 자세히 보여준다
+            errors += 1
             row = {"판정": "확인필요", "사유": f"읽기 실패: {type(e).__name__}: {e}"}
         row["No"] = i
         row["캡처파일"] = os.path.basename(f)
