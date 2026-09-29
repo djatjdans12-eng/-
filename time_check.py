@@ -60,6 +60,7 @@ REGIONS = {
     "interval":     (915, 490, 1045, 516),    # 촬영간격 : N분
     "body":         (630, 100, 1420, 425),    # 민원내용 (촬영시각 줄이 여기 있음)
     "index":        (90, 965, 125, 997),      # 화면 왼쪽 아래 현재 번호
+    "vio_time":     (228, 165, 306, 191),     # 위반일시의 시:분 칸
 }
 SCALE_UP = {"body": 2, "index": 4}            # 그 외는 3배
 
@@ -522,7 +523,7 @@ def fmt_sec(s):
 # ────────────────────────────────────────────────
 # 판정
 # ────────────────────────────────────────────────
-def judge(raw):
+def _judge(raw):
     rem, rem_state = match_remark(raw["remark"])
     if rem_state == "empty" and not raw.get("remark_blank", True):
         rem_state = "unknown"          # 칸에 글자는 있는데 OCR 이 못 읽음
@@ -591,18 +592,59 @@ def judge(raw):
     return row
 
 
+LUNCH = ("11:00:00", "14:00:00")     # 기타5분 점심시간 (11시 이상 14시 미만)
+NIGHT = ("21:00:00", "06:00:00")     # 기타5분 야간 (21시 이상 또는 6시 미만)
+
+
+def time_band(times):
+    """촬영시각들 중 하나라도 점심/야간에 걸리면 표시. (1번째~2번째 사이에 걸쳐도 포함)"""
+    if not times:
+        return ""
+    lo, hi = min(times), max(times)
+    tags = []
+    if lo < LUNCH[1] and hi >= LUNCH[0]:
+        tags.append("점심시간")
+    if any(t >= NIGHT[0] or t < NIGHT[1] for t in times) or (lo < NIGHT[0] <= hi):
+        tags.append("야간")
+    return ",".join(tags)
+
+
+def judge(raw):
+    row = _judge(raw)
+    row["시간대"] = ""
+    if row.get("비고") != "기타5분":
+        return row
+    times = [row[k] for k in ("1번째 촬영", "2번째 촬영") if row.get(k)]
+    src = "촬영시각"
+    if not times:
+        m = re.search(r"(\d{1,2})\s*[:;]\s*(\d{2})", raw.get("vio_time", ""))
+        if m:
+            times = [f"{int(m.group(1)):02d}:{m.group(2)}:00"]
+            src = "위반일시"
+    band = time_band(times)
+    if band:
+        row["시간대"] = band
+        extra = f"기타5분 {band} ({src} {'~'.join(t[:5] for t in times)})"
+        row["사유"] = (row.get("사유", "") + "; " + extra).strip("; ")
+    elif not times:
+        row["시간대"] = "확인필요"
+        row["사유"] = (row.get("사유", "") + "; 시각을 못 읽어 점심/야간 여부 확인 못함").strip("; ")
+    return row
+
+
 # ────────────────────────────────────────────────
 # 엑셀
 # ────────────────────────────────────────────────
 COLS = ["No", "화면번호", "민원번호", "차량번호(참고)", "비고", "1번째 촬영", "2번째 촬영",
-        "간격(계산)", "간격(화면표시)", "기준", "판정", "사유", "캡처파일"]
+        "간격(계산)", "간격(화면표시)", "기준", "판정", "시간대", "사유", "캡처파일"]
 FILLS = {
     "부족": PatternFill("solid", fgColor="FFC7CE"),
     "확인필요": PatternFill("solid", fgColor="FFEB9C"),
     "정상(주의)": PatternFill("solid", fgColor="FFF2CC"),
     "비고없음": PatternFill("solid", fgColor="E7E6E6"),
 }
-WIDTHS = [6, 9, 20, 14, 14, 12, 12, 12, 14, 12, 11, 60, 14]
+WIDTHS = [6, 9, 20, 14, 14, 12, 12, 12, 14, 12, 11, 14, 60, 14]
+BAND_FILL = PatternFill("solid", fgColor="BDD7EE")     # 점심시간/야간 칸
 
 
 def write_sheet(ws, rows):
@@ -618,6 +660,8 @@ def write_sheet(ws, rows):
         if fill:
             for cell in ws[rn]:
                 cell.fill = fill
+        if r.get("시간대"):
+            ws.cell(rn, COLS.index("시간대") + 1).fill = BAND_FILL
         link = ws.cell(rn, len(COLS))
         link.hyperlink = r["캡처파일"]
         link.font = Font(color="0563C1", underline="single")
@@ -635,6 +679,8 @@ def save_excel(rows, out_path):
     bad = [r for r in rows if r["판정"] in ("부족", "확인필요", "정상(주의)")]
     ws2 = wb.create_sheet("부족·확인필요")
     write_sheet(ws2, bad)
+    ws3 = wb.create_sheet("점심·야간")
+    write_sheet(ws3, [r for r in rows if r.get("시간대")])
     wb.save(out_path)
 
 
@@ -695,6 +741,9 @@ def run(folder, engine_choice="auto"):
     for r in rows:
         if r["판정"] in ("부족", "확인필요", "정상(주의)"):
             print(f"  ▶ {r['판정']}: {r.get('민원번호', '')}  {r.get('사유', '')}  ({r['캡처파일']})")
+    for r in rows:
+        if r.get("시간대"):
+            print(f"  ◆ {r['시간대']}: {r.get('민원번호', '')}  {r.get('1번째 촬영', '')}~{r.get('2번째 촬영', '')}  ({r['캡처파일']})")
     print(f"엑셀: {out}")
     return out
 
