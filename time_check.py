@@ -1,0 +1,423 @@
+# -*- coding: utf-8 -*-
+"""
+time_check.py — 위반자료 상세관리 화면 캡처들을 읽어 '촬영간격 부족' 건을 엑셀로 뽑는다.
+
+사용
+  pip install openpyxl pillow
+  python time_check.py                     ← 저장 폴더에서 가장 최근 캡처 폴더를 자동 선택
+  python time_check.py "D:\\...\\시간확인\\20260929_101500"
+  python time_check.py 폴더 --engine tesseract     (윈도우 OCR 이 안 될 때)
+
+판정 규칙
+  · 비고가 '기타5분'  → 1번째~2번째 사진 촬영간격이 300초(5분) 이상이어야 정상
+  · 비고가 그 외      → 60초(1분) 이상이어야 정상
+  · 비고가 비어 있음  → '비고없음' (판정 안 함. 제외건 등)
+  · 3장 이상이어도 1번째와 2번째 사진 간격만 본다
+
+간격은 두 군데서 따로 구해 서로 맞춰 본다.
+  ① 민원내용의 (1/N) (2/N) 촬영시각 → 초 단위로 직접 계산
+  ② 화면의 '촬영간격 : 1분' 표시   → 분 단위로 잘려서 나옴 (5분42초 → '5분')
+     기준(60초, 300초)이 모두 분 단위라서 ②만으로도 정상/부족은 정확히 가려진다.
+둘이 서로 다른 결론이면 '확인필요' 로 남긴다. 못 읽은 것을 정상으로 넘기지 않는다.
+"""
+
+import argparse
+import difflib
+import glob
+import io
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
+
+try:
+    from PIL import Image, ImageOps
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+except ImportError:
+    print("[설치 필요] pip install openpyxl pillow")
+    sys.exit(1)
+
+# ────────────────────────────────────────────────
+# 설정
+# ────────────────────────────────────────────────
+DEFAULT_BASE = r"D:\양산\바탕 화면\엄성문\유용한기능\시간간격 검사\시간확인"
+
+NORMAL_SEC = 60          # 일반 비고 기준 (이상이면 정상)
+ETC5_SEC = 300           # 기타5분 기준
+KNOWN_REMARKS = ["인도", "소방시설", "어린이보호구역", "교차로", "횡단보도", "버스정류장", "기타5분"]
+
+# 기준 화면(1442x1006) 에서의 읽을 영역 (x1, y1, x2, y2). 창 크기가 다르면 비율로 보정.
+BASE_W, BASE_H = 1442, 1006
+REGIONS = {
+    "complaint_no": (105, 95, 285, 125),      # 민원번호
+    "plate":        (108, 281, 240, 307),     # 차량번호 (참고용)
+    "remark":       (105, 445, 605, 472),     # 비고
+    "interval":     (915, 490, 1045, 516),    # 촬영간격 : N분
+    "body":         (630, 100, 1420, 425),    # 민원내용 (촬영시각 줄이 여기 있음)
+    "index":        (90, 965, 125, 997),      # 화면 왼쪽 아래 현재 번호
+}
+SCALE_UP = {"body": 2, "index": 4}            # 그 외는 3배
+
+
+# ────────────────────────────────────────────────
+# OCR 엔진
+# ────────────────────────────────────────────────
+class TesseractEngine:
+    name = "tesseract"
+
+    def __init__(self):
+        exe = None
+        for p in (r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                  r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+                  r"C:\rpa\Tesseract-OCR\tesseract.exe"):
+            if os.path.exists(p):
+                exe = p
+                break
+        self.exe = exe or "tesseract"
+        subprocess.run([self.exe, "--version"], capture_output=True, check=True)
+
+    def read(self, img, kind):
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        psm = "6" if kind == "body" else "7"
+        cmd = [self.exe, "stdin", "stdout", "-l", "kor+eng", "--psm", psm]
+        if kind == "index":
+            cmd += ["-c", "tessedit_char_whitelist=0123456789"]
+        r = subprocess.run(cmd, input=buf.getvalue(), capture_output=True)
+        return r.stdout.decode("utf-8", "replace")
+
+    def close(self):
+        pass
+
+
+class WindowsEngine:
+    """plate_ocr.py 에 이미 들어 있는 윈도우 내장 OCR 을 그대로 재사용."""
+    name = "windows"
+
+    def __init__(self):
+        import plate_ocr
+        self.be = plate_ocr.OcrBackend(lang="ko", log=lambda *a: None)
+        if self.be.kind is None:
+            raise RuntimeError("윈도우 OCR 엔진 없음")
+        self.tmp = tempfile.mkdtemp(prefix="timecheck_")
+
+    def read(self, img, kind):
+        path = os.path.join(self.tmp, "crop.png")
+        img.save(path, "PNG")
+        return self.be.read(path)
+
+    def close(self):
+        try:
+            self.be.close()
+        except Exception:
+            pass
+
+
+def make_engine(choice):
+    if choice in ("auto", "windows") and sys.platform == "win32":
+        try:
+            return WindowsEngine()
+        except Exception as e:
+            print(f"[안내] 윈도우 OCR 사용 불가 ({e}) → Tesseract 로 시도합니다")
+    try:
+        return TesseractEngine()
+    except Exception as e:
+        print(f"[오류] 사용할 수 있는 OCR 엔진이 없습니다: {e}")
+        sys.exit(1)
+
+
+# ────────────────────────────────────────────────
+# 이미지 → 영역별 글자
+# ────────────────────────────────────────────────
+def crop_region(img, key):
+    sx, sy = img.width / BASE_W, img.height / BASE_H
+    x1, y1, x2, y2 = REGIONS[key]
+    c = img.crop((int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)))
+    k = SCALE_UP.get(key, 3)
+    c = c.resize((c.width * k, c.height * k), Image.LANCZOS)
+    bg = c.getpixel((2, 2))
+    return ImageOps.expand(c, border=20, fill=bg)      # 글자에 붙지 않게 여백
+
+
+def is_blank(img):
+    """글자(어두운 픽셀)가 거의 없으면 빈 칸."""
+    g = img.convert("L")
+    return sum(g.histogram()[:128]) < 20
+
+
+def read_screen(engine, path):
+    img = Image.open(path).convert("RGB")
+    raw = {}
+    for k in REGIONS:
+        c = crop_region(img, k)
+        raw[k] = "" if k == "remark" and is_blank(c) else engine.read(c, k).strip()
+    return raw, (img.width, img.height)
+
+
+# ────────────────────────────────────────────────
+# 글자 → 값
+# ────────────────────────────────────────────────
+TS_RE = re.compile(r"(\d{4})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[T ]?\s*"
+                   r"(\d{1,2})\s*[:;]\s*(\d{2})\s*[:;]\s*(\d{2})")
+
+
+def _to_dt(m):
+    try:
+        return datetime(*[int(g) for g in m.groups()])
+    except ValueError:
+        return None
+
+
+def parse_stamps(text):
+    """(1/N), (2/N) 뒤의 촬영시각 두 개. 표식이 깨졌으면 앞에서 두 개."""
+    found = {}
+    for k in (1, 2):
+        mk = re.search(r"\(\s*%d\s*/\s*\d+\s*\)" % k, text)
+        if mk:
+            m = TS_RE.search(text, mk.end(), mk.end() + 60)
+            if m and _to_dt(m):
+                found[k] = _to_dt(m)
+    if 1 in found and 2 in found:
+        return found[1], found[2]
+    dts = [d for d in (_to_dt(m) for m in TS_RE.finditer(text)) if d]
+    if len(dts) >= 2:
+        return dts[0], dts[1]
+    return (dts[0] if dts else None), None
+
+
+def parse_display(text):
+    """'촬영간격 : 1분' / '30초' / '1분 30초' → (하한초, 상한초). 못 읽으면 None."""
+    t = text.replace(" ", "")
+    mn = re.search(r"(\d+)분", t)
+    sc = re.search(r"(\d+)초", t)
+    if not mn and not sc:
+        return None
+    lo = (int(mn.group(1)) * 60 if mn else 0) + (int(sc.group(1)) if sc else 0)
+    hi = lo + 59 if (mn and not sc) else lo       # '5분' 은 5분00~59초
+    return lo, hi
+
+
+def match_remark(text):
+    """(정규화된 비고, 상태)  상태: ok / empty / unknown"""
+    n = re.sub(r"[^가-힣0-9]", "", text)
+    if not n:
+        return "", "empty"
+    if "기타" in n or (n.endswith("5분") and len(n) <= 3):
+        return "기타5분", "ok"
+    for r in KNOWN_REMARKS:
+        if r in n:
+            return r, "ok"
+    for r in KNOWN_REMARKS:
+        if len(n) >= 2 and n in r:
+            return r, "ok"
+    c = difflib.get_close_matches(n, KNOWN_REMARKS, n=1, cutoff=0.6)
+    if c:
+        return c[0], "ok"
+    return n, "unknown"
+
+
+def parse_complaint_no(text):
+    t = re.sub(r"\s+", "", text)
+    m = re.search(r"(\d{4})\D{0,2}(\d{7})", t)
+    if not m:
+        return t
+    return f"{m.group(1)}-{m.group(2)}"          # 접두어(2AA 등)는 OCR 이 흔들려서 뺀다
+
+
+def fmt_sec(s):
+    if s is None:
+        return ""
+    m, r = divmod(int(s), 60)
+    return f"{m}분{r:02d}초" if m else f"{r}초"
+
+
+# ────────────────────────────────────────────────
+# 판정
+# ────────────────────────────────────────────────
+def judge(raw):
+    rem, rem_state = match_remark(raw["remark"])
+    t1, t2 = parse_stamps(raw["body"])
+    computed = None
+    if t1 and t2:
+        computed = int((t2 - t1).total_seconds())
+    disp = parse_display(raw["interval"])
+    idx = re.sub(r"\D", "", raw["index"])
+
+    row = {
+        "화면번호": idx, "민원번호": parse_complaint_no(raw["complaint_no"]),
+        "차량번호(참고)": re.sub(r"\s+", "", raw["plate"]), "비고": rem if rem_state == "ok" else ("" if rem_state == "empty" else raw["remark"]),
+        "1번째 촬영": t1.strftime("%H:%M:%S") if t1 else "", "2번째 촬영": t2.strftime("%H:%M:%S") if t2 else "",
+        "간격(계산)": fmt_sec(computed) if computed is not None else "",
+        "간격(화면표시)": fmt_sec(disp[0]) + ("~" if disp and disp[1] > disp[0] else "") if disp else "",
+    }
+    notes = []
+
+    if rem_state == "empty":
+        row.update({"기준": "", "판정": "비고없음", "사유": "비고가 비어 있어 판정하지 않음"})
+        return row
+    if rem_state == "unknown":
+        row.update({"기준": "", "판정": "확인필요", "사유": f"비고를 못 읽음: '{raw['remark']}'"})
+        return row
+
+    need = ETC5_SEC if rem == "기타5분" else NORMAL_SEC
+    row["기준"] = fmt_sec(need) + " 이상"
+
+    verdicts = {}
+    if computed is not None:
+        if computed < 0:
+            notes.append("2번째 시각이 1번째보다 빠름")
+        else:
+            verdicts["시각"] = computed >= need
+    if disp:
+        if disp[0] >= need:
+            verdicts["표시"] = True
+        elif disp[1] < need:
+            verdicts["표시"] = False
+        else:
+            notes.append("화면 표시만으로는 판단 불가")
+
+    if computed is not None and disp and not (disp[0] <= computed <= disp[1]):
+        notes.append(f"계산({fmt_sec(computed)})과 화면표시({row['간격(화면표시)']}) 불일치 — 시각을 잘못 읽었을 수 있음")
+
+    if not verdicts:
+        row.update({"판정": "확인필요", "사유": "; ".join(notes) or "촬영시각과 촬영간격을 못 읽음"})
+        return row
+    if len(set(verdicts.values())) > 1:
+        row.update({"판정": "확인필요", "사유": "시각 계산과 화면표시의 결론이 다름; " + "; ".join(notes)})
+        return row
+
+    ok = next(iter(verdicts.values()))
+    if computed is None:
+        notes.append("촬영시각 못 읽음 → 화면표시 기준")
+    shown = fmt_sec(computed) if computed is not None and computed >= 0 else row["간격(화면표시)"]
+    if ok:
+        row["판정"] = "정상"
+        row["사유"] = "; ".join(notes)
+    else:
+        row["판정"] = "부족"
+        row["사유"] = f"{rem} {shown} (기준 {fmt_sec(need)} 이상)" + ("; " + "; ".join(notes) if notes else "")
+    if ok and any("불일치" in n or "못 읽음" in n for n in notes):
+        row["판정"] = "정상(주의)"
+    return row
+
+
+# ────────────────────────────────────────────────
+# 엑셀
+# ────────────────────────────────────────────────
+COLS = ["No", "화면번호", "민원번호", "차량번호(참고)", "비고", "1번째 촬영", "2번째 촬영",
+        "간격(계산)", "간격(화면표시)", "기준", "판정", "사유", "캡처파일"]
+FILLS = {
+    "부족": PatternFill("solid", fgColor="FFC7CE"),
+    "확인필요": PatternFill("solid", fgColor="FFEB9C"),
+    "정상(주의)": PatternFill("solid", fgColor="FFF2CC"),
+    "비고없음": PatternFill("solid", fgColor="E7E6E6"),
+}
+WIDTHS = [6, 9, 20, 14, 14, 12, 12, 12, 14, 12, 11, 60, 14]
+
+
+def write_sheet(ws, rows):
+    ws.append(COLS)
+    for c in ws[1]:
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill("solid", fgColor="305496")
+        c.alignment = Alignment(horizontal="center")
+    for r in rows:
+        ws.append([r.get(c, "") for c in COLS])
+        fill = FILLS.get(r["판정"])
+        rn = ws.max_row
+        if fill:
+            for cell in ws[rn]:
+                cell.fill = fill
+        link = ws.cell(rn, len(COLS))
+        link.hyperlink = r["캡처파일"]
+        link.font = Font(color="0563C1", underline="single")
+    for i, w in enumerate(WIDTHS, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+
+def save_excel(rows, out_path):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "전체"
+    write_sheet(ws, rows)
+    bad = [r for r in rows if r["판정"] in ("부족", "확인필요", "정상(주의)")]
+    ws2 = wb.create_sheet("부족·확인필요")
+    write_sheet(ws2, bad)
+    wb.save(out_path)
+
+
+# ────────────────────────────────────────────────
+# 실행
+# ────────────────────────────────────────────────
+def natural_key(p):
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", os.path.basename(p))]
+
+
+def pick_folder(base):
+    if glob.glob(os.path.join(base, "*.png")):
+        return base
+    subs = [d for d in glob.glob(os.path.join(base, "*")) if os.path.isdir(d)
+            and glob.glob(os.path.join(d, "*.png"))]
+    if not subs:
+        return None
+    return max(subs, key=os.path.getmtime)
+
+
+def run(folder, engine_choice="auto"):
+    files = sorted(glob.glob(os.path.join(folder, "*.png")), key=natural_key)
+    if not files:
+        print(f"[오류] PNG 파일이 없습니다: {folder}")
+        return None
+    engine = make_engine(engine_choice)
+    print(f"폴더: {folder}\n캡처 {len(files)}장 / OCR 엔진: {engine.name}")
+    rows, t0 = [], time.time()
+    for i, f in enumerate(files, 1):
+        try:
+            raw, size = read_screen(engine, f)
+            row = judge(raw)
+            if abs(size[0] / BASE_W - 1) > 0.02 or abs(size[1] / BASE_H - 1) > 0.02:
+                row["사유"] = (row.get("사유", "") + f"; 창 크기 {size[0]}x{size[1]} (기준 {BASE_W}x{BASE_H})").strip("; ")
+        except Exception as e:
+            row = {"판정": "확인필요", "사유": f"읽기 실패: {type(e).__name__}: {e}"}
+        row["No"] = i
+        row["캡처파일"] = os.path.basename(f)
+        rows.append(row)
+        print(f"  [{i}/{len(files)}] {row.get('민원번호', '?')}  {row.get('비고', '')}  "
+              f"{row.get('간격(계산)', '')}  → {row['판정']}")
+    engine.close()
+
+    out = os.path.join(folder, f"시간간격_결과_{datetime.now():%Y%m%d_%H%M%S}.xlsx")
+    save_excel(rows, out)
+
+    cnt = {}
+    for r in rows:
+        cnt[r["판정"]] = cnt.get(r["판정"], 0) + 1
+    print(f"\n완료 ({time.time() - t0:.0f}초)  " + "  ".join(f"{k} {v}" for k, v in cnt.items()))
+    for r in rows:
+        if r["판정"] in ("부족", "확인필요", "정상(주의)"):
+            print(f"  ▶ {r['판정']}: {r.get('민원번호', '')}  {r.get('사유', '')}  ({r['캡처파일']})")
+    print(f"엑셀: {out}")
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="촬영간격 부족 건 엑셀 추출")
+    ap.add_argument("folder", nargs="?", help="캡처 PNG 가 있는 폴더 (생략하면 최근 폴더)")
+    ap.add_argument("--engine", choices=["auto", "windows", "tesseract"], default="auto")
+    a = ap.parse_args(argv)
+    folder = a.folder or pick_folder(DEFAULT_BASE)
+    if not folder or not os.path.isdir(folder):
+        print(f"[오류] 캡처 폴더를 찾지 못했습니다: {a.folder or DEFAULT_BASE}")
+        return 1
+    return 0 if run(folder, a.engine) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
