@@ -95,37 +95,61 @@ class TesseractEngine:
         pass
 
 
+def pick_tmp_dir(preferred):
+    """OCR 용 임시 이미지를 쓸 수 있는 폴더를 고른다 (정부 PC 는 폴더별로 쓰기가 막혀 있을 수 있음).
+    캡처 폴더(이미 저장이 되는 곳)를 1순위로, 실제로 파일을 써 보고 되는 곳만 쓴다."""
+    cands = [os.path.join(p, "_ocr_tmp") for p in preferred]
+    cands.append(os.path.join(tempfile.gettempdir(), "_ocr_tmp"))
+    for d in cands:
+        try:
+            os.makedirs(d, exist_ok=True)
+            probe = os.path.join(d, "probe.png")
+            with open(probe, "wb") as f:
+                f.write(b"x")
+            os.remove(probe)
+            return d
+        except OSError:
+            continue
+    raise RuntimeError("임시 이미지를 쓸 수 있는 폴더가 없음")
+
+
 class WindowsEngine:
     """plate_ocr.py 에 이미 들어 있는 윈도우 내장 OCR 을 그대로 재사용."""
     name = "windows"
 
-    def __init__(self):
+    def __init__(self, folder=None):
         import plate_ocr
         self.be = plate_ocr.OcrBackend(lang="ko", log=lambda *a: None)
         if self.be.kind is None:
             raise RuntimeError("윈도우 OCR 엔진 없음")
-        # 시스템 임시폴더는 정부 PC 에서 쓰기가 막히거나 경로 오류가 날 수 있어
-        # 스크립트가 있는 폴더 아래에 임시 폴더를 둔다
-        base = os.path.dirname(os.path.abspath(__file__))
-        self.tmp = os.path.join(base, "_ocr_tmp")
-        os.makedirs(self.tmp, exist_ok=True)
+        here = os.path.dirname(os.path.abspath(__file__))
+        self.tmp = pick_tmp_dir([p for p in (folder, here) if p])
+        print(f"임시 폴더: {self.tmp}")
 
     def read(self, img, kind):
-        path = os.path.join(self.tmp, "crop.png")
-        img.save(path, "PNG")
-        return self.be.read(os.path.abspath(path))
+        path = os.path.abspath(os.path.join(self.tmp, "crop.png"))
+        buf = io.BytesIO()
+        img.save(buf, "PNG")
+        with open(path, "wb") as f:            # Pillow 의 w+b 대신 일반 wb 로 쓴다
+            f.write(buf.getvalue())
+        return self.be.read(path)
 
     def close(self):
         try:
             self.be.close()
         except Exception:
             pass
+        try:
+            os.remove(os.path.join(self.tmp, "crop.png"))
+            os.rmdir(self.tmp)
+        except OSError:
+            pass
 
 
-def make_engine(choice):
+def make_engine(choice, folder=None):
     if choice in ("auto", "windows") and sys.platform == "win32":
         try:
-            return WindowsEngine()
+            return WindowsEngine(folder)
         except Exception as e:
             print(f"[안내] 윈도우 OCR 사용 불가 ({e}) → Tesseract 로 시도합니다")
     try:
@@ -379,7 +403,7 @@ def run(folder, engine_choice="auto"):
     if not files:
         print(f"[오류] PNG 파일이 없습니다: {folder}")
         return None
-    engine = make_engine(engine_choice)
+    engine = make_engine(engine_choice, folder)
     print(f"폴더: {folder}\n캡처 {len(files)}장 / OCR 엔진: {engine.name}")
     rows, t0, errors = [], time.time(), 0
     for i, f in enumerate(files, 1):
