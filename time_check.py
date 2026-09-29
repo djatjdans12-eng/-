@@ -29,7 +29,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime
 
@@ -95,55 +94,122 @@ class TesseractEngine:
         pass
 
 
-def pick_tmp_dir(preferred):
-    """OCR 용 임시 이미지를 쓸 수 있는 폴더를 고른다 (정부 PC 는 폴더별로 쓰기가 막혀 있을 수 있음).
-    캡처 폴더(이미 저장이 되는 곳)를 1순위로, 실제로 파일을 써 보고 되는 곳만 쓴다."""
-    cands = [os.path.join(p, "_ocr_tmp") for p in preferred]
-    cands.append(os.path.join(tempfile.gettempdir(), "_ocr_tmp"))
-    for d in cands:
-        try:
-            os.makedirs(d, exist_ok=True)
-            probe = os.path.join(d, "probe.png")
-            with open(probe, "wb") as f:
-                f.write(b"x")
-            os.remove(probe)
-            return d
-        except OSError:
-            continue
-    raise RuntimeError("임시 이미지를 쓸 수 있는 폴더가 없음")
+# 윈도우 내장 OCR 을 PowerShell 5.1 로 상주시켜 쓴다. (plate_ocr.py 와 같은 방식)
+# 단, 정부 PC 보안 프로그램이 임시 이미지 파일 쓰기를 막아서
+# 이미지를 파일로 저장하지 않고 base64 로 표준입력에 넘겨 메모리에서 바로 읽힌다.
+_PS_MEM_WORKER = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+[Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime] | Out-Null
+[Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime] | Out-Null
+[Windows.Globalization.Language, Windows.Globalization, ContentType=WindowsRuntime] | Out-Null
+
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+
+function Await($op, $type) {
+    $m = $asTaskGeneric.MakeGenericMethod($type)
+    $t = $m.Invoke($null, @($op))
+    $t.Wait(-1) | Out-Null
+    $t.Result
+}
+
+$engine = $null
+try { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('ko')) } catch {}
+if ($null -eq $engine) { $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
+if ($null -eq $engine) { Write-Output '###FAIL###OCR 언어팩 없음'; exit 1 }
+Write-Output ('###READY###' + $engine.RecognizerLanguage.LanguageTag)
+
+while ($true) {
+    $line = [Console]::In.ReadLine()
+    if ($null -eq $line -or $line -eq '###QUIT###') { break }
+    try {
+        $bytes   = [Convert]::FromBase64String($line)
+        $ms      = New-Object System.IO.MemoryStream(,$bytes)
+        $ras     = [System.IO.WindowsRuntimeStreamExtensions]::AsRandomAccessStream($ms)
+        $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($ras)) ([Windows.Graphics.Imaging.BitmapDecoder])
+        $bmp     = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+        $res     = Await ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
+        foreach ($ln in $res.Lines) { Write-Output $ln.Text }
+        $bmp.Dispose()
+        $ms.Dispose()
+    } catch {
+        Write-Output ('###ERR###' + $_.Exception.Message)
+    }
+    Write-Output '###EOF###'
+}
+"""
 
 
 class WindowsEngine:
-    """plate_ocr.py 에 이미 들어 있는 윈도우 내장 OCR 을 그대로 재사용."""
+    """윈도우 내장 OCR (임시 파일 없이 메모리로 전달)."""
     name = "windows"
 
     def __init__(self, folder=None):
-        import plate_ocr
-        self.be = plate_ocr.OcrBackend(lang="ko", log=lambda *a: None)
-        if self.be.kind is None:
-            raise RuntimeError("윈도우 OCR 엔진 없음")
-        here = os.path.dirname(os.path.abspath(__file__))
-        self.tmp = pick_tmp_dir([p for p in (folder, here) if p])
-        print(f"임시 폴더: {self.tmp}")
+        import base64
+        import threading
+        self._b64 = base64.b64encode
+        self._threading = threading
+        ps = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+                          r"System32\WindowsPowerShell\v1.0\powershell.exe")
+        enc = base64.b64encode(_PS_MEM_WORKER.encode("utf-16-le")).decode()
+        self.proc = subprocess.Popen(
+            [ps, "-NoProfile", "-NonInteractive", "-EncodedCommand", enc],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        line = self._readline(30)
+        if not line or not line.startswith("###READY###"):
+            self.close()
+            raise RuntimeError(f"엔진 준비 실패: {line!r}")
+        self.first_err = True
+
+    def _readline(self, timeout):
+        box = {}
+
+        def rd():
+            box["v"] = self.proc.stdout.readline()
+
+        t = self._threading.Thread(target=rd, daemon=True)
+        t.start()
+        t.join(timeout)
+        if t.is_alive():
+            return None
+        return (box.get("v") or "").rstrip("\r\n")
 
     def read(self, img, kind):
-        path = os.path.abspath(os.path.join(self.tmp, "crop.png"))
         buf = io.BytesIO()
         img.save(buf, "PNG")
-        with open(path, "wb") as f:            # Pillow 의 w+b 대신 일반 wb 로 쓴다
-            f.write(buf.getvalue())
-        return self.be.read(path)
+        self.proc.stdin.write(self._b64(buf.getvalue()).decode() + "\n")
+        self.proc.stdin.flush()
+        out = []
+        while True:
+            line = self._readline(20)
+            if line is None:
+                raise RuntimeError("OCR 응답 시간 초과")
+            if line == "###EOF###":
+                break
+            if line.startswith("###ERR###"):
+                raise RuntimeError("윈도우 OCR 오류: " + line[9:])
+            out.append(line)
+        return "\n".join(out)
 
     def close(self):
+        if getattr(self, "proc", None) is None:
+            return
         try:
-            self.be.close()
+            self.proc.stdin.write("###QUIT###\n")
+            self.proc.stdin.flush()
         except Exception:
             pass
         try:
-            os.remove(os.path.join(self.tmp, "crop.png"))
-            os.rmdir(self.tmp)
-        except OSError:
+            self.proc.terminate()
+        except Exception:
             pass
+        self.proc = None
 
 
 def make_engine(choice, folder=None):
