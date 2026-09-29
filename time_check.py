@@ -212,12 +212,109 @@ class WindowsEngine:
         self.proc = None
 
 
+class WinRtEngine:
+    """파이썬 winrt/winsdk 모듈로 윈도우 내장 OCR 을 직접 호출 (파일도 PowerShell 도 쓰지 않음).
+    이 PC 는 PowerShell 실행과 임시 이미지 저장이 막혀 있어 이 방식을 1순위로 쓴다."""
+    name = "windows(winrt)"
+
+    def __init__(self, folder=None):
+        m = None
+        for pkg in ("winsdk", "winrt"):
+            try:
+                ocr = __import__(pkg + ".windows.media.ocr", fromlist=["x"])
+                glob_ = __import__(pkg + ".windows.globalization", fromlist=["x"])
+                img = __import__(pkg + ".windows.graphics.imaging", fromlist=["x"])
+                m = (pkg, ocr, glob_, img)
+                break
+            except ImportError:
+                continue
+        if m is None:
+            raise RuntimeError("winrt/winsdk 모듈 없음")
+        self.pkg, ocr, glob_, self.img = m
+        eng = ocr.OcrEngine.try_create_from_language(glob_.Language("ko"))
+        if eng is None:
+            eng = ocr.OcrEngine.try_create_from_user_profile_languages()
+        if eng is None:
+            raise RuntimeError("OCR 언어팩 없음")
+        self.engine = eng
+        self._make_buffer = self._buffer_maker()
+        # 시험 한 번 (여기서 실패하면 다음 방식으로 넘어간다)
+        self.read(Image.new("RGB", (60, 30), "white"), "test")
+
+    def _buffer_maker(self):
+        """바이트열 → IBuffer. 설치된 모듈에 따라 되는 방법이 달라서 차례로 시도."""
+        makers = []
+        try:
+            st = __import__(self.pkg + ".windows.storage.streams", fromlist=["x"])
+
+            def by_writer(data):
+                w = st.DataWriter()
+                try:
+                    w.write_bytes(data)
+                except TypeError:
+                    w.write_bytes(list(data))
+                return w.detach_buffer()
+            makers.append(by_writer)
+        except ImportError:
+            pass
+        try:
+            cr = __import__(self.pkg + ".windows.security.cryptography", fromlist=["x"])
+
+            def by_crypto(data):
+                try:
+                    return cr.CryptographicBuffer.create_from_byte_array(data)
+                except TypeError:
+                    return cr.CryptographicBuffer.create_from_byte_array(list(data))
+            makers.append(by_crypto)
+        except ImportError:
+            pass
+        if not makers:
+            raise RuntimeError("winrt Streams/Cryptography 모듈 없음")
+
+        def make(data):
+            last = None
+            for f in makers:
+                try:
+                    return f(data)
+                except Exception as e:
+                    last = e
+            raise last
+        return make
+
+    def read(self, img, kind):
+        import asyncio
+        rgba = img.convert("RGBA")
+        b, g, r, a = rgba.split()
+        data = Image.merge("RGBA", (b, g, r, a)).tobytes()      # BGRA 순서
+        buf = self._make_buffer(data)
+        bmp = self.img.SoftwareBitmap.create_copy_from_buffer(
+            buf, self.img.BitmapPixelFormat.BGRA8, img.width, img.height,
+            self.img.BitmapAlphaMode.PREMULTIPLIED)
+
+        async def go():
+            res = await self.engine.recognize_async(bmp)
+            return "\n".join(ln.text for ln in res.lines)
+
+        try:
+            return asyncio.run(go())
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(go())
+            finally:
+                loop.close()
+
+    def close(self):
+        pass
+
+
 def make_engine(choice, folder=None):
     if choice in ("auto", "windows") and sys.platform == "win32":
-        try:
-            return WindowsEngine(folder)
-        except Exception as e:
-            print(f"[안내] 윈도우 OCR 사용 불가 ({e}) → Tesseract 로 시도합니다")
+        for cls in (WinRtEngine, WindowsEngine):
+            try:
+                return cls(folder)
+            except Exception as e:
+                print(f"[안내] {cls.__name__} 사용 불가 ({type(e).__name__}: {e})")
     try:
         return TesseractEngine()
     except Exception as e:
